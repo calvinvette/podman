@@ -11,28 +11,28 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/filters"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/ps"
-	"github.com/containers/podman/v4/pkg/signal"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/filters"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/ps"
+	"github.com/containers/podman/v5/pkg/signal"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/docker/docker/api/types"
+	dockerBackend "github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/go-connections/nat"
 	"github.com/docker/go-units"
-	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
 
 func RemoveContainer(w http.ResponseWriter, r *http.Request) {
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		Force         bool  `schema:"force"`
 		Ignore        bool  `schema:"ignore"`
@@ -99,7 +99,7 @@ func RemoveContainer(w http.ResponseWriter, r *http.Request) {
 
 func ListContainers(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		All   bool `schema:"all"`
 		Limit int  `schema:"limit"`
@@ -121,7 +121,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 
 	filterFuncs := make([]libpod.ContainerFilter, 0, len(*filterMap))
 	all := query.All || query.Limit > 0
-	if len((*filterMap)) > 0 {
+	if len(*filterMap) > 0 {
 		for k, v := range *filterMap {
 			generatedFunc, err := filters.GenerateContainerFilterFuncs(k, v, runtime)
 			if err != nil {
@@ -146,7 +146,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 		filterFuncs = append(filterFuncs, runningOnly)
 	}
 
-	containers, err := runtime.GetContainers(filterFuncs...)
+	containers, err := runtime.GetContainers(false, filterFuncs...)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -179,7 +179,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 
 func GetContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		Size bool `schema:"size"`
 	}{
@@ -208,7 +208,7 @@ func GetContainer(w http.ResponseWriter, r *http.Request) {
 func KillContainer(w http.ResponseWriter, r *http.Request) {
 	// /{version}/containers/(name)/kill
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
 		Signal string `schema:"signal"`
 	}{
@@ -243,6 +243,11 @@ func KillContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(report) > 0 && report[0].Err != nil {
+		if errors.Is(report[0].Err, define.ErrCtrStateInvalid) ||
+			errors.Is(report[0].Err, define.ErrCtrStopped) {
+			utils.Error(w, http.StatusConflict, report[0].Err)
+			return
+		}
 		utils.InternalServerError(w, report[0].Err)
 		return
 	}
@@ -256,8 +261,8 @@ func KillContainer(w http.ResponseWriter, r *http.Request) {
 		}
 		if sig == 0 || sig == syscall.SIGKILL {
 			opts := entities.WaitOptions{
-				Condition: []define.ContainerStatus{define.ContainerStateExited, define.ContainerStateStopped},
-				Interval:  time.Millisecond * 250,
+				Conditions: []string{define.ContainerStateExited.String(), define.ContainerStateStopped.String()},
+				Interval:   time.Millisecond * 250,
 			}
 			if _, err := containerEngine.ContainerWait(r.Context(), []string{name}, opts); err != nil {
 				utils.Error(w, http.StatusInternalServerError, err)
@@ -393,7 +398,7 @@ func LibpodToContainer(l *libpod.Container, sz bool) (*handlers.Container, error
 			NetworkSettings: &networkSettings,
 			Mounts:          mounts,
 		},
-		ContainerCreateConfig: types.ContainerCreateConfig{},
+		ContainerCreateConfig: dockerBackend.ContainerCreateConfig{},
 	}, nil
 }
 
@@ -437,22 +442,28 @@ func LibpodToContainerJSON(l *libpod.Container, sz bool) (*types.ContainerJSON, 
 	}
 
 	if l.HasHealthCheck() && state.Status != "created" {
-		state.Health = &types.Health{
-			Status:        inspect.State.Health.Status,
-			FailingStreak: inspect.State.Health.FailingStreak,
-		}
+		state.Health = &types.Health{}
+		if inspect.State.Health != nil {
+			state.Health.Status = inspect.State.Health.Status
+			state.Health.FailingStreak = inspect.State.Health.FailingStreak
+			log := inspect.State.Health.Log
 
-		log := inspect.State.Health.Log
-
-		for _, item := range log {
-			res := &types.HealthcheckResult{}
-			s, _ := time.Parse(time.RFC3339Nano, item.Start)
-			e, _ := time.Parse(time.RFC3339Nano, item.End)
-			res.Start = s
-			res.End = e
-			res.ExitCode = item.ExitCode
-			res.Output = item.Output
-			state.Health.Log = append(state.Health.Log, res)
+			for _, item := range log {
+				res := &types.HealthcheckResult{}
+				s, err := time.Parse(time.RFC3339Nano, item.Start)
+				if err != nil {
+					return nil, err
+				}
+				e, err := time.Parse(time.RFC3339Nano, item.End)
+				if err != nil {
+					return nil, err
+				}
+				res.Start = s
+				res.End = e
+				res.ExitCode = item.ExitCode
+				res.Output = item.Output
+				state.Health.Log = append(state.Health.Log, res)
+			}
 		}
 	}
 
@@ -520,11 +531,11 @@ func LibpodToContainerJSON(l *libpod.Container, sz bool) (*types.ContainerJSON, 
 
 	exposedPorts := make(nat.PortSet)
 	for ep := range inspect.NetworkSettings.Ports {
-		splitp := strings.SplitN(ep, "/", 2)
-		if len(splitp) != 2 {
+		port, proto, ok := strings.Cut(ep, "/")
+		if !ok {
 			return nil, fmt.Errorf("PORT/PROTOCOL Format required for %q", ep)
 		}
-		exposedPort, err := nat.NewPort(splitp[1], splitp[0])
+		exposedPort, err := nat.NewPort(proto, port)
 		if err != nil {
 			return nil, err
 		}
@@ -622,7 +633,7 @@ func formatCapabilities(slice []string) {
 
 func RenameContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 
 	name := utils.GetName(r)
 	query := struct {

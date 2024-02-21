@@ -12,9 +12,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	k8sAPI "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
-	"github.com/ghodss/yaml"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	k8sAPI "github.com/containers/podman/v5/pkg/k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func (ic *ContainerEngine) KubeApply(ctx context.Context, body io.Reader, options entities.ApplyOptions) error {

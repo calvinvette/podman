@@ -7,7 +7,7 @@ podman-image-diff - Inspect changes on an image's filesystem
 **podman image diff** [*options*] *image* [*image*]
 
 ## DESCRIPTION
-Displays changes on an image's filesystem.  The image will be compared to its parent layer or the second argument when given.
+Displays changes on an image's filesystem.  The image is compared to its parent layer or the second argument when given.
 
 The output is prefixed with the following symbols:
 
@@ -25,16 +25,18 @@ Alter the output into a different format.  The only valid format for **podman im
 
 ## EXAMPLE
 
+Display image differences from images parent layer:
 ```
-$ podman diff redis:old
+$ podman image diff redis:old
 C /usr
 C /usr/local
 C /usr/local/bin
 A /usr/local/bin/docker-entrypoint.sh
 ```
 
+Display image differences between two different images in JSON format:
 ```
-$ podman diff --format json redis:old redis:alpine
+$ podman image diff --format json redis:old redis:alpine
 {
   "changed": [
     "/usr",

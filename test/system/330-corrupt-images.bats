@@ -17,14 +17,17 @@ PODMAN_CORRUPT_TEST_IMAGE_CANONICAL_FQIN=quay.io/libpod/alpine@sha256:634a8f35b5
 PODMAN_CORRUPT_TEST_IMAGE_TAGGED_FQIN=${PODMAN_CORRUPT_TEST_IMAGE_CANONICAL_FQIN%%@sha256:*}:test
 PODMAN_CORRUPT_TEST_IMAGE_ID=961769676411f082461f9ef46626dd7a2d1e2b2a38e6a44364bcbecf51e66dd4
 
-# All tests in this file (and ONLY in this file) run with a custom rootdir
 function setup() {
     skip_if_remote "none of these tests run under podman-remote"
-    _PODMAN_TEST_OPTS="--storage-driver=vfs --root ${PODMAN_CORRUPT_TEST_WORKDIR}/root"
+
+    # DANGER! This completely changes the behavior of run_podman,
+    # forcing it to use a quarantined directory. Make certain that
+    # it gets unset in teardown.
+    _PODMAN_TEST_OPTS="--storage-driver=vfs $(podman_isolation_opts ${PODMAN_CORRUPT_TEST_WORKDIR})"
 }
 
 function teardown() {
-    # No other tests should ever run with this custom rootdir
+    # No other tests should ever run with these scratch options
     unset _PODMAN_TEST_OPTS
 
     is_remote && return
@@ -74,12 +77,16 @@ function _corrupt_image_test() {
         # Corruptify, and confirm that 'podman images' throws an error
         rm -v ${PODMAN_CORRUPT_TEST_WORKDIR}/root/*-images/$id/${rm_path}
         run_podman 125 images
-        is "$output" "Error: retrieving label for image \"$id\": you may need to remove the image to resolve the error.*"
+        is "$output" "Error: locating item named \".*\" for image with ID \"$id\" (consider removing the image to resolve the issue): file does not exist.*"
 
-        # Run the requested command. Confirm it succeeds, with suitable warnings
-        run_podman $*
-        is "$output" ".*Failed to determine parent of image.*ignoring the error" \
-           "$* with missing $what_to_rm"
+        # Run the requested command. Confirm it succeeds, with suitable warnings.
+        run_podman 0+w $*
+        # There are three different variations on the warnings, allow each...
+        allow_warnings "Failed to determine parent of image: .*, ignoring the error" \
+                       "Failed to determine if an image is a parent: .*, ignoring the error" \
+                       "Failed to determine if an image is a manifest list: .*, ignoring the error"
+        # ...but make sure we get at least one
+        require_warning "Failed to determine (parent|if an image is) .*, ignoring the error"
 
         run_podman images -a --noheading
         is "$output" "" "podman images -a, after $*, is empty"

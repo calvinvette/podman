@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build (linux || freebsd) && cni
 
 package cni
 
@@ -11,11 +10,11 @@ import (
 
 	internalutil "github.com/containers/common/libnetwork/internal/util"
 	"github.com/containers/common/libnetwork/types"
-	pkgutil "github.com/containers/common/pkg/util"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/exp/slices"
 )
 
-func (n *cniNetwork) NetworkUpdate(name string, options types.NetworkUpdateOptions) error {
+func (n *cniNetwork) NetworkUpdate(_ string, _ types.NetworkUpdateOptions) error {
 	return fmt.Errorf("NetworkUpdate is not supported for backend CNI: %w", types.ErrInvalidArg)
 }
 
@@ -86,6 +85,7 @@ func (n *cniNetwork) networkCreate(newNetwork *types.Network, defaultNet bool) (
 
 	switch newNetwork.Driver {
 	case types.BridgeNetworkDriver:
+		internalutil.MapDockerBridgeDriverOptions(newNetwork)
 		err = internalutil.CreateBridge(n, newNetwork, usedNetworks, n.defaultsubnetPools)
 		if err != nil {
 			return nil, err
@@ -205,7 +205,7 @@ func createIPMACVLAN(network *types.Network) error {
 		if err != nil {
 			return err
 		}
-		if !pkgutil.StringInSlice(network.NetworkInterface, interfaceNames) {
+		if !slices.Contains(interfaceNames, network.NetworkInterface) {
 			return fmt.Errorf("parent interface %s does not exist", network.NetworkInterface)
 		}
 	}

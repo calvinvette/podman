@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/pkg/util"
 )
 
 func generateEventFilter(filter, filterValue string) (func(e *Event) bool, error) {
@@ -52,7 +52,8 @@ func generateEventFilter(filter, filterValue string) (func(e *Event) bool, error
 			if e.Type != Volume {
 				return false
 			}
-			return strings.HasPrefix(e.ID, filterValue)
+			// Prefix match with name for consistency with docker
+			return strings.HasPrefix(e.Name, filterValue)
 		}, nil
 	case "TYPE":
 		return func(e *Event) bool {

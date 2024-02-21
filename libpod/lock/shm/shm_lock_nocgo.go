@@ -1,5 +1,4 @@
 //go:build linux && !cgo
-// +build linux,!cgo
 
 package shm
 
@@ -100,4 +99,16 @@ func (locks *SHMLocks) LockSemaphore(sem uint32) error {
 func (locks *SHMLocks) UnlockSemaphore(sem uint32) error {
 	logrus.Error("Locks are not supported without cgo")
 	return nil
+}
+
+// GetFreeLocks gets the number of locks available to be allocated.
+func (locks *SHMLocks) GetFreeLocks() (uint32, error) {
+	logrus.Error("Locks are not supported without cgo")
+	return 0, nil
+}
+
+// Get a list of locks that are currently taken.
+func (locks *SHMLocks) GetTakenLocks() ([]uint32, error) {
+	logrus.Error("Locks are not supported without cgo")
+	return nil, nil
 }

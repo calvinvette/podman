@@ -21,6 +21,9 @@ to see if someone else has already reported it. If so, feel free to add
 your scenario, or additional information, to the discussion. Or simply
 "subscribe" to it to be notified when it is updated.
 
+Note: Older closed issues/PRs are automatically locked, if you have a similar
+problem please open a new issue instead of commenting.
+
 If you find a new issue with the project we'd love to hear about it! The most
 important aspect of a bug report is that it includes enough information for
 us to reproduce it. To make this easier, there are three types of issue
@@ -46,7 +49,8 @@ the “In Progress” label be set and a member will do so for you.
 
 ## Contributing to Podman
 
-This section describes how to start a contribution to Podman. These instructions are geared towards using a Linux development machine, which is required for doing development on the podman backend. Check out these instructions for [building the podman client on MacOSX](./build_osx.md).
+This section describes how to start a contribution to Podman. These instructions are geared towards using a Linux development machine, which is required for doing development on the Podman backend. Check out these instructions for building the Podman client on [MacOSX](./build_osx.md) or
+[Windows](./build_windows.md).
 
 ### Prepare your environment
 
@@ -339,7 +343,7 @@ branches, which you may occasionally see [red bars on the status graph
 .](https://cirrus-ci.com/github/containers/podman/master)
 
 When the graph shows mostly green bars on the right, it's a good indication
-the master branch is currently stable.  Alternating red/green bars is indicative
+the main branch is currently stable.  Alternating red/green bars is indicative
 of a testing "flake", and should be examined (anybody can do this):
 
 * *One or a small handful of tests, on a single task, (i.e. specific distro/version)

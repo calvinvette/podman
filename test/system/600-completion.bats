@@ -37,6 +37,11 @@ function check_shell_completion() {
 "
 
     for cmd in $(_podman_commands "$@"); do
+        # Skip the compose command which is calling `docker-compose --help`
+        # and hence won't match the assumptions made below.
+        if [[ "$cmd" == "compose" ]]; then
+            continue
+        fi
         # Human-readable podman command string, with multiple spaces collapsed
         name="podman"
         if is_remote; then
@@ -309,6 +314,25 @@ function _check_no_suggestions() {
     # recurse for any subcommands.
     check_shell_completion
 
+    # check inspect with format flag
+    run_completion inspect -f "{{."
+    assert "$output" =~ ".*^\{\{\.Args\}\}\$.*" "Defaulting to container type is completed"
+
+    run_completion inspect created-$random_container_name -f "{{."
+    assert "$output" =~ ".*^\{\{\.Args\}\}\$.*" "Container type is completed"
+
+    run_completion inspect $random_image_name -f "{{."
+    assert "$output" =~ ".*^\{\{\.Digest\}\}\$.*" "Image type is completed"
+
+    run_completion inspect $random_volume_name -f "{{."
+    assert "$output" =~ ".*^\{\{\.Anonymous\}\}\$.*" "Volume type is completed"
+
+    run_completion inspect created-$random_pod_name -f "{{."
+    assert "$output" =~ ".*^\{\{\.BlkioDeviceReadBps\}\}\$.*" "Pod type is completed"
+
+    run_completion inspect $random_network_name -f "{{."
+    assert "$output" =~ ".*^\{\{\.DNSEnabled\}\}\$.*" "Network type is completed"
+
     # cleanup
     run_podman secret rm $random_secret_name
     rm -f $secret_file
@@ -352,6 +376,11 @@ function _check_no_suggestions() {
         # check completion for partial file name
         run_completion $cmd $IMAGE "/etc/os-"
         assert "$output" =~ ".*^/etc/os-release\$.*" "/etc files suggested (cmd: podman $cmd /etc/os-)"
+
+        # regression check for https://bugzilla.redhat.com/show_bug.cgi?id=2209809
+        # check for relative directory without slash in path.
+        run_completion $cmd $IMAGE "e"
+        assert "$output" =~ ".*^etc/\$.*" "etc dir suggested (cmd: podman $cmd e)"
 
         # check completion with relative path components
         # It is important the we will still use the image root and not escape to the host

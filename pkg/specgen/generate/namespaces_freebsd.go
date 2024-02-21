@@ -1,11 +1,14 @@
+//go:build !remote
+
 package generate
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/buildah/pkg/jail"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/sirupsen/logrus"
 )
@@ -48,4 +51,11 @@ func specConfigureNamespaces(s *specgen.SpecGenerator, g *generate.Generator, rt
 	}
 
 	return nil
+}
+
+// On FreeBSD 13.3 and later, we can avoid creating a separate vnet jail but
+// only if we can initialise the network after the OCI container is created -
+// the OCI container will own the vnet in this case.
+func needPostConfigureNetNS(s *specgen.SpecGenerator) bool {
+	return jail.NeedVnetJail() == false
 }

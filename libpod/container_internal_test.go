@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -6,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/containers/storage/pkg/idtools"
@@ -18,10 +21,18 @@ import (
 var hookPath string
 
 func TestParseOptionIDs(t *testing.T) {
-	_, err := parseOptionIDs("uids=100-200-2")
+	idMap := []idtools.IDMap{
+		{
+			ContainerID: 0,
+			HostID:      1,
+			Size:        10000,
+		},
+	}
+
+	_, err := parseOptionIDs(idMap, "uids=100-200-2")
 	assert.NotNil(t, err)
 
-	mappings, err := parseOptionIDs("100-200-2")
+	mappings, err := parseOptionIDs(idMap, "100-200-2")
 	assert.Nil(t, err)
 	assert.NotNil(t, mappings)
 
@@ -31,7 +42,7 @@ func TestParseOptionIDs(t *testing.T) {
 	assert.Equal(t, mappings[0].HostID, 200)
 	assert.Equal(t, mappings[0].Size, 2)
 
-	mappings, err = parseOptionIDs("100-200-2#300-400-5")
+	mappings, err = parseOptionIDs(idMap, "100-200-2#300-400-5")
 	assert.Nil(t, err)
 	assert.NotNil(t, mappings)
 
@@ -44,6 +55,26 @@ func TestParseOptionIDs(t *testing.T) {
 	assert.Equal(t, mappings[1].ContainerID, 300)
 	assert.Equal(t, mappings[1].HostID, 400)
 	assert.Equal(t, mappings[1].Size, 5)
+
+	mappings, err = parseOptionIDs(idMap, "@100-200-2#@300-400-5")
+	assert.Nil(t, err)
+	assert.NotNil(t, mappings)
+
+	assert.Equal(t, len(mappings), 2)
+
+	assert.Equal(t, mappings[0].ContainerID, 100)
+	assert.Equal(t, mappings[0].HostID, 201)
+	assert.Equal(t, mappings[0].Size, 2)
+
+	assert.Equal(t, mappings[1].ContainerID, 300)
+	assert.Equal(t, mappings[1].HostID, 401)
+	assert.Equal(t, mappings[1].Size, 5)
+
+	_, err = parseOptionIDs(idMap, "@10000-20000-2")
+	assert.NotNil(t, err)
+
+	_, err = parseOptionIDs(idMap, "100-200-3###400-500-6")
+	assert.NotNil(t, err)
 }
 
 func TestParseIDMapMountOption(t *testing.T) {
@@ -70,12 +101,12 @@ func TestParseIDMapMountOption(t *testing.T) {
 	assert.Equal(t, len(uids), 1)
 	assert.Equal(t, len(gids), 1)
 
-	assert.Equal(t, uids[0].ContainerID, uint32(1000))
-	assert.Equal(t, uids[0].HostID, uint32(0))
+	assert.Equal(t, uids[0].HostID, uint32(1000))
+	assert.Equal(t, uids[0].ContainerID, uint32(0))
 	assert.Equal(t, uids[0].Size, uint32(10000))
 
-	assert.Equal(t, gids[0].ContainerID, uint32(2000))
-	assert.Equal(t, gids[0].HostID, uint32(0))
+	assert.Equal(t, gids[0].HostID, uint32(2000))
+	assert.Equal(t, gids[0].ContainerID, uint32(0))
 	assert.Equal(t, gids[0].Size, uint32(10000))
 
 	uids, gids, err = parseIDMapMountOption(options, "idmap=uids=0-1-10#10-11-10;gids=0-3-10")
@@ -83,16 +114,16 @@ func TestParseIDMapMountOption(t *testing.T) {
 	assert.Equal(t, len(uids), 2)
 	assert.Equal(t, len(gids), 1)
 
-	assert.Equal(t, uids[0].ContainerID, uint32(1))
-	assert.Equal(t, uids[0].HostID, uint32(0))
+	assert.Equal(t, uids[0].HostID, uint32(1))
+	assert.Equal(t, uids[0].ContainerID, uint32(0))
 	assert.Equal(t, uids[0].Size, uint32(10))
 
-	assert.Equal(t, uids[1].ContainerID, uint32(11))
-	assert.Equal(t, uids[1].HostID, uint32(10))
+	assert.Equal(t, uids[1].HostID, uint32(11))
+	assert.Equal(t, uids[1].ContainerID, uint32(10))
 	assert.Equal(t, uids[1].Size, uint32(10))
 
-	assert.Equal(t, gids[0].ContainerID, uint32(3))
-	assert.Equal(t, gids[0].HostID, uint32(0))
+	assert.Equal(t, gids[0].HostID, uint32(3))
+	assert.Equal(t, gids[0].ContainerID, uint32(0))
 	assert.Equal(t, gids[0].Size, uint32(10))
 
 	_, _, err = parseIDMapMountOption(options, "idmap=uids=0-1-10#10-11-10;gids=0-3-10;foobar=bar")
@@ -117,6 +148,7 @@ func TestPostDeleteHooks(t *testing.T) {
 
 	statePath := filepath.Join(dir, "state")
 	copyPath := filepath.Join(dir, "copy")
+	cwdPath := filepath.Join(dir, "cwd")
 	c := Container{
 		runtime: &Runtime{},
 		config: &ContainerConfig{
@@ -144,6 +176,10 @@ func TestPostDeleteHooks(t *testing.T) {
 						Path: hookPath,
 						Args: []string{"sh", "-c", fmt.Sprintf("cp %s %s", statePath, copyPath)},
 					},
+					rspec.Hook{
+						Path: hookPath,
+						Args: []string{"sh", "-c", fmt.Sprintf("pwd >%s", cwdPath)},
+					},
 				},
 			},
 		},
@@ -152,8 +188,7 @@ func TestPostDeleteHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	stateRegexp := `{"ociVersion":"1\.0\.2-dev","id":"123abc","status":"stopped","bundle":"` + dir + `","annotations":{"a":"b"}}`
+	stateRegexp := `{"ociVersion":"[0-9]+\.[0-9]+\..*","id":"123abc","status":"stopped","bundle":"` + dir + `","annotations":{"a":"b"}}`
 	for _, p := range []string{statePath, copyPath} {
 		path := p
 		t.Run(path, func(t *testing.T) {
@@ -164,6 +199,11 @@ func TestPostDeleteHooks(t *testing.T) {
 			assert.Regexp(t, stateRegexp, string(content))
 		})
 	}
+	content, err := os.ReadFile(cwdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Equal(t, strings.TrimSuffix(string(content), "\n"), dir)
 }
 
 func init() {

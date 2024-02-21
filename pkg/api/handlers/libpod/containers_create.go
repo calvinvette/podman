@@ -2,17 +2,19 @@ package libpod
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgen/generate"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgen/generate"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/storage"
 )
 
 // CreateContainer takes a specgenerator and makes a container. It returns
@@ -28,10 +30,11 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	// we have to set the default before we decode to make sure the correct default is set when the field is unset
 	sg := specgen.SpecGenerator{
 		ContainerNetworkConfig: specgen.ContainerNetworkConfig{
-			UseImageHosts: conf.Containers.NoHosts,
+			UseImageHosts: &conf.Containers.NoHosts,
 		},
 		ContainerSecurityConfig: specgen.ContainerSecurityConfig{
-			Umask: conf.Containers.Umask,
+			Umask:      conf.Containers.Umask,
+			Privileged: &conf.Containers.Privileged,
 		},
 	}
 
@@ -59,11 +62,20 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 
 	warn, err := generate.CompleteSpec(r.Context(), runtime, &sg)
 	if err != nil {
+		if errors.Is(err, storage.ErrImageUnknown) {
+			utils.Error(w, http.StatusNotFound, fmt.Errorf("no such image: %w", err))
+			return
+		}
 		utils.InternalServerError(w, err)
 		return
 	}
+
 	rtSpec, spec, opts, err := generate.MakeContainer(r.Context(), runtime, &sg, false, nil)
 	if err != nil {
+		if errors.Is(err, storage.ErrImageUnknown) {
+			utils.Error(w, http.StatusNotFound, fmt.Errorf("no such image: %w", err))
+			return
+		}
 		utils.InternalServerError(w, err)
 		return
 	}

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -34,6 +36,6 @@ func TestLabelVolumePath(t *testing.T) {
 	}
 
 	// LabelVolumePath should not return an error if the operation is unsupported.
-	err := LabelVolumePath("/foo/bar")
+	err := LabelVolumePath("/foo/bar", "")
 	assert.NoError(t, err)
 }

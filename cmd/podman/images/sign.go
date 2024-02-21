@@ -6,9 +6,9 @@ import (
 
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -56,8 +56,13 @@ func init() {
 }
 
 func sign(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(signOptions.Authfile); err != nil {
+			return err
+		}
+	}
 	if signOptions.SignBy == "" {
-		return errors.New("please provide an identity")
+		return errors.New("no identity provided")
 	}
 
 	var sigStoreDir string

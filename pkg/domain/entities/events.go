@@ -4,45 +4,47 @@ import (
 	"strconv"
 	"time"
 
-	libpodEvents "github.com/containers/podman/v4/libpod/events"
+	libpodEvents "github.com/containers/podman/v5/libpod/events"
+	types "github.com/containers/podman/v5/pkg/domain/entities/types"
 	dockerEvents "github.com/docker/docker/api/types/events"
 )
 
-// Event combines various event-related data such as time, event type, status
-// and more.
-type Event struct {
-	// TODO: it would be nice to have full control over the types at some
-	// point and fork such Docker types.
-	dockerEvents.Message
-	HealthStatus string `json:",omitempty"`
-}
+type Event = types.Event
 
 // ConvertToLibpodEvent converts an entities event to a libpod one.
 func ConvertToLibpodEvent(e Event) *libpodEvents.Event {
-	exitCode, err := strconv.Atoi(e.Actor.Attributes["containerExitCode"])
+	var exitCode int
+	if ec, ok := e.Actor.Attributes["containerExitCode"]; ok {
+		var err error
+		exitCode, err = strconv.Atoi(ec)
+		if err != nil {
+			return nil
+		}
+	}
+	status, err := libpodEvents.StringToStatus(string(e.Action))
 	if err != nil {
 		return nil
 	}
-	status, err := libpodEvents.StringToStatus(e.Action)
-	if err != nil {
-		return nil
-	}
-	t, err := libpodEvents.StringToType(e.Type)
+	t, err := libpodEvents.StringToType(string(e.Type))
 	if err != nil {
 		return nil
 	}
 	image := e.Actor.Attributes["image"]
 	name := e.Actor.Attributes["name"]
-	details := e.Actor.Attributes
+	network := e.Actor.Attributes["network"]
 	podID := e.Actor.Attributes["podId"]
+	details := e.Actor.Attributes
 	delete(details, "image")
 	delete(details, "name")
+	delete(details, "network")
+	delete(details, "podId")
 	delete(details, "containerExitCode")
 	return &libpodEvents.Event{
-		ContainerExitCode: exitCode,
+		ContainerExitCode: &exitCode,
 		ID:                e.Actor.ID,
 		Image:             image,
 		Name:              name,
+		Network:           network,
 		Status:            status,
 		Time:              time.Unix(0, e.TimeNano),
 		Type:              t,
@@ -55,22 +57,27 @@ func ConvertToLibpodEvent(e Event) *libpodEvents.Event {
 }
 
 // ConvertToEntitiesEvent converts a libpod event to an entities one.
-func ConvertToEntitiesEvent(e libpodEvents.Event) *Event {
+func ConvertToEntitiesEvent(e libpodEvents.Event) *types.Event {
 	attributes := e.Details.Attributes
 	if attributes == nil {
 		attributes = make(map[string]string)
 	}
 	attributes["image"] = e.Image
 	attributes["name"] = e.Name
-	attributes["containerExitCode"] = strconv.Itoa(e.ContainerExitCode)
+	if e.ContainerExitCode != nil {
+		attributes["containerExitCode"] = strconv.Itoa(*e.ContainerExitCode)
+	}
 	attributes["podId"] = e.PodID
+	if e.Network != "" {
+		attributes["network"] = e.Network
+	}
 	message := dockerEvents.Message{
 		// Compatibility with clients that still look for deprecated API elements
 		Status: e.Status.String(),
 		ID:     e.ID,
 		From:   e.Image,
-		Type:   e.Type.String(),
-		Action: e.Status.String(),
+		Type:   dockerEvents.Type(e.Type.String()),
+		Action: dockerEvents.Action(e.Status.String()),
 		Actor: dockerEvents.Actor{
 			ID:         e.ID,
 			Attributes: attributes,
@@ -79,8 +86,8 @@ func ConvertToEntitiesEvent(e libpodEvents.Event) *Event {
 		Time:     e.Time.Unix(),
 		TimeNano: e.Time.UnixNano(),
 	}
-	return &Event{
-		message,
-		e.HealthStatus,
+	return &types.Event{
+		Message:      message,
+		HealthStatus: e.HealthStatus,
 	}
 }

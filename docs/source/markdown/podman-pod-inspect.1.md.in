@@ -1,7 +1,7 @@
 % podman-pod-inspect 1
 
 ## NAME
-podman\-pod\-inspect - Displays information describing a pod
+podman\-pod\-inspect - Display information describing a pod
 
 ## SYNOPSIS
 **podman pod inspect** [*options*] *pod* ...
@@ -34,7 +34,7 @@ Valid placeholders for the Go template are listed below:
 | .CPUShares           | CPU Shares                                  |
 | .CreateCgroup        | Whether cgroup was created                  |
 | .CreateCommand       | Create command                              |
-| .Created             | Time when the pod was created               |
+| .Created ...         | Time when the pod was created               |
 | .CreateInfra         | Whether infrastructure created              |
 | .Devices             | Devices                                     |
 | .ExitPolicy          | Exit policy                                 |
@@ -43,13 +43,15 @@ Valid placeholders for the Go template are listed below:
 | .InfraConfig ...     | Infra config (contains further fields)      |
 | .InfraContainerID    | Pod infrastructure ID                       |
 | .InspectPodData ...  | Nested structure, for experts only          |
-| .Labels              | Pod labels                                  |
+| .Labels ...          | Pod labels                                  |
+| .LockNumber          | Number of the pod's Libpod lock             |
 | .MemoryLimit         | Memory limit, bytes                         |
 | .MemorySwap          | Memory swap limit, in bytes                 |
 | .Mounts              | Mounts                                      |
 | .Name                | Pod name                                    |
 | .Namespace           | Namespace                                   |
 | .NumContainers       | Number of containers in the pod             |
+| .RestartPolicy       | Restart policy of the pod                   |
 | .SecurityOpts        | Security options                            |
 | .SharedNamespaces    | Pod shared namespaces                       |
 | .State               | Pod state                                   |
@@ -58,33 +60,36 @@ Valid placeholders for the Go template are listed below:
 @@option latest
 
 ## EXAMPLE
+
+Inspect specified pod:
 ```
 # podman pod inspect foobar
-{
-
-     "Id": "3513ca70583dd7ef2bac83331350f6b6c47d7b4e526c908e49d89ebf720e4693",
-     "Name": "foobar",
-     "Labels": {},
-     "CgroupParent": "/libpod_parent",
-     "CreateCgroup": true,
-     "Created": "2018-08-08T11:15:18.823115347-05:00"
-     "State": "created",
-     "Hostname": "",
-     "SharedNamespaces": [
-          "uts",
-          "ipc",
-          "net"
-     ]
-     "CreateInfra": false,
-     "InfraContainerID": "1020dd70583dd7ff2bac83331350f6b6e007de0d026c908e49d89ebf891d4699"
-     "CgroupPath": ""
-     "Containers": [
-          {
-               "id": "d53f8bf1e9730281264aac6e6586e327429f62c704abea4b6afb5d8a2b2c9f2c",
-               "state": "configured"
-          }
-     ]
-}
+[
+     {
+         "Id": "3513ca70583dd7ef2bac83331350f6b6c47d7b4e526c908e49d89ebf720e4693",
+         "Name": "foobar",
+         "Labels": {},
+         "CgroupParent": "/libpod_parent",
+         "CreateCgroup": true,
+         "Created": "2018-08-08T11:15:18.823115347-05:00"
+         "State": "created",
+         "Hostname": "",
+         "SharedNamespaces": [
+              "uts",
+              "ipc",
+              "net"
+         ]
+         "CreateInfra": false,
+         "InfraContainerID": "1020dd70583dd7ff2bac83331350f6b6e007de0d026c908e49d89ebf891d4699"
+         "CgroupPath": ""
+         "Containers": [
+              {
+                   "id": "d53f8bf1e9730281264aac6e6586e327429f62c704abea4b6afb5d8a2b2c9f2c",
+                   "state": "configured"
+              }
+         ]
+     }
+]
 ```
 
 ## SEE ALSO

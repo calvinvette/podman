@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -5,8 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/sirupsen/logrus"
 )
 
@@ -21,7 +23,7 @@ func (p *Pod) platformRefresh() error {
 			}
 			p.state.CgroupPath = cgroupPath
 		case config.CgroupfsCgroupsManager:
-			if rootless.IsRootless() && isRootlessCgroupSet(p.config.CgroupParent) {
+			if !rootless.IsRootless() || isRootlessCgroupSet(p.config.CgroupParent) {
 				p.state.CgroupPath = filepath.Join(p.config.CgroupParent, p.ID())
 
 				logrus.Debugf("setting pod cgroup to %s", p.state.CgroupPath)

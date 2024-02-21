@@ -6,21 +6,25 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/pkg/machine"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/pkg/machine"
+	"github.com/containers/podman/v5/pkg/machine/define"
 	"github.com/containers/storage/pkg/stringid"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/format"
 	. "github.com/onsi/gomega/gexec"
+	"github.com/onsi/gomega/types"
+	"golang.org/x/exp/slices"
 )
 
 var originalHomeDir = os.Getenv("HOME")
 
 const (
-	defaultTimeout time.Duration = 90 * time.Second
+	defaultTimeout = 240 * time.Second
 )
 
 type machineCommand interface {
@@ -28,7 +32,7 @@ type machineCommand interface {
 }
 
 type MachineTestBuilder interface {
-	setName(string) *MachineTestBuilder
+	setName(name string) *MachineTestBuilder
 	setCmd(mc machineCommand) *MachineTestBuilder
 	setTimeout(duration time.Duration) *MachineTestBuilder
 	run() (*machineSession, error)
@@ -50,8 +54,6 @@ type machineTestBuilder struct {
 // number of seconds
 func (ms *machineSession) waitWithTimeout(timeout time.Duration) {
 	Eventually(ms, timeout).Should(Exit())
-	os.Stdout.Sync()
-	os.Stderr.Sync()
 }
 
 func (ms *machineSession) Bytes() []byte {
@@ -96,9 +98,16 @@ func newMB() (*machineTestBuilder, error) {
 	if err != nil {
 		return nil, err
 	}
-	mb.podmanBinary = filepath.Join(cwd, "../../../bin/podman-remote")
+	mb.podmanBinary = filepath.Join(cwd, podmanBinary)
 	if os.Getenv("PODMAN_BINARY") != "" {
 		mb.podmanBinary = os.Getenv("PODMAN_BINARY")
+	}
+	if os.Getenv("MACHINE_TEST_TIMEOUT") != "" {
+		seconds, err := strconv.Atoi(os.Getenv("MACHINE_TEST_TIMEOUT"))
+		if err != nil {
+			return nil, err
+		}
+		mb.timeout = time.Duration(seconds) * time.Second
 	}
 	return &mb, nil
 }
@@ -113,7 +122,7 @@ func (m *machineTestBuilder) setName(name string) *machineTestBuilder {
 // representation of the podman machine command
 func (m *machineTestBuilder) setCmd(mc machineCommand) *machineTestBuilder {
 	// If no name for the machine exists, we set a random name.
-	if !util.StringInSlice(m.name, m.names) {
+	if !slices.Contains(m.names, m.name) {
 		if len(m.name) < 1 {
 			m.name = randomString()
 		}
@@ -123,7 +132,7 @@ func (m *machineTestBuilder) setCmd(mc machineCommand) *machineTestBuilder {
 	return m
 }
 
-func (m *machineTestBuilder) setTimeout(timeout time.Duration) *machineTestBuilder {
+func (m *machineTestBuilder) setTimeout(timeout time.Duration) *machineTestBuilder { //nolint: unparam
 	m.timeout = timeout
 	return m
 }
@@ -154,7 +163,7 @@ func runWrapper(podmanBinary string, cmdArgs []string, timeout time.Duration, wa
 	if len(os.Getenv("DEBUG")) > 0 {
 		cmdArgs = append([]string{"--log-level=debug"}, cmdArgs...)
 	}
-	fmt.Println(podmanBinary + " " + strings.Join(cmdArgs, " "))
+	GinkgoWriter.Println(podmanBinary + " " + strings.Join(cmdArgs, " "))
 	c := exec.Command(podmanBinary, cmdArgs...)
 	session, err := Start(c, GinkgoWriter, GinkgoWriter)
 	if err != nil {
@@ -164,7 +173,6 @@ func runWrapper(podmanBinary string, cmdArgs []string, timeout time.Duration, wa
 	ms := machineSession{session}
 	if wait {
 		ms.waitWithTimeout(timeout)
-		fmt.Println("output:", ms.outputToString())
 	}
 	return &ms, nil
 }
@@ -172,4 +180,76 @@ func runWrapper(podmanBinary string, cmdArgs []string, timeout time.Duration, wa
 // randomString returns a string of given length composed of random characters
 func randomString() string {
 	return stringid.GenerateRandomID()[0:12]
+}
+
+type ValidJSONMatcher struct {
+	types.GomegaMatcher
+}
+
+func BeValidJSON() *ValidJSONMatcher {
+	return &ValidJSONMatcher{}
+}
+
+func (matcher *ValidJSONMatcher) Match(actual interface{}) (success bool, err error) {
+	s, ok := actual.(string)
+	if !ok {
+		return false, fmt.Errorf("ValidJSONMatcher expects a string, not %q", actual)
+	}
+
+	var i interface{}
+	if err := json.Unmarshal([]byte(s), &i); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (matcher *ValidJSONMatcher) FailureMessage(actual interface{}) (message string) {
+	return format.Message(actual, "to be valid JSON")
+}
+
+func (matcher *ValidJSONMatcher) NegatedFailureMessage(actual interface{}) (message string) {
+	return format.Message(actual, "to _not_ be valid JSON")
+}
+
+func skipIfVmtype(vmType define.VMType, message string) {
+	if isVmtype(vmType) {
+		Skip(message)
+	}
+}
+
+func skipIfNotVmtype(vmType define.VMType, message string) {
+	if !isVmtype(vmType) {
+		Skip(message)
+	}
+}
+
+func skipIfWSL(message string) {
+	skipIfVmtype(define.WSLVirt, message)
+}
+
+func isVmtype(vmType define.VMType) bool {
+	return testProvider.VMType() == vmType
+}
+
+// isWSL is a simple wrapper to determine if the testprovider is WSL
+func isWSL() bool {
+	return isVmtype(define.WSLVirt)
+}
+
+// Only used on Windows
+//
+//nolint:unparam,unused
+func runSystemCommand(binary string, cmdArgs []string, timeout time.Duration, wait bool) (*machineSession, error) {
+	GinkgoWriter.Println(binary + " " + strings.Join(cmdArgs, " "))
+	c := exec.Command(binary, cmdArgs...)
+	session, err := Start(c, GinkgoWriter, GinkgoWriter)
+	if err != nil {
+		Fail(fmt.Sprintf("Unable to start session: %q", err))
+		return nil, err
+	}
+	ms := machineSession{session}
+	if wait {
+		ms.waitWithTimeout(timeout)
+	}
+	return &ms, nil
 }

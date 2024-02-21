@@ -5,9 +5,11 @@ import (
 )
 
 type setMachine struct {
-	cpus     *uint
-	diskSize *uint
-	memory   *uint
+	cpus               *uint
+	diskSize           *uint
+	memory             *uint
+	rootful            bool
+	userModeNetworking bool
 
 	cmd []string
 }
@@ -22,6 +24,12 @@ func (i *setMachine) buildCmd(m *machineTestBuilder) []string {
 	}
 	if i.memory != nil {
 		cmd = append(cmd, "--memory", strconv.Itoa(int(*i.memory)))
+	}
+	if i.rootful {
+		cmd = append(cmd, "--rootful")
+	}
+	if i.userModeNetworking {
+		cmd = append(cmd, "--user-mode-networking")
 	}
 	cmd = append(cmd, m.name)
 	i.cmd = cmd
@@ -39,5 +47,15 @@ func (i *setMachine) withDiskSize(size uint) *setMachine {
 
 func (i *setMachine) withMemory(num uint) *setMachine {
 	i.memory = &num
+	return i
+}
+
+func (i *setMachine) withRootful(r bool) *setMachine {
+	i.rootful = r
+	return i
+}
+
+func (i *setMachine) withUserModeNetworking(r bool) *setMachine {
+	i.userModeNetworking = r
 	return i
 }

@@ -2,7 +2,7 @@
 package swagger
 
 import (
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/docker/docker/api/types"
 )
 
@@ -44,3 +44,7 @@ type networkDisconnectRequest types.NetworkDisconnect
 // Network connect
 // swagger:model
 type networkConnectRequestLibpod entities.NetworkConnectOptions
+
+// Network update
+// swagger:model
+type networkUpdateRequestLibpod entities.NetworkUpdateOptions

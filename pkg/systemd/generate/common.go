@@ -1,3 +1,5 @@
+//go:build !remote
+
 package generate
 
 import (
@@ -5,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/systemd/define"
+	"github.com/containers/podman/v5/pkg/systemd/define"
 )
 
 // minTimeoutStopSec is the minimal stop timeout for generated systemd units.

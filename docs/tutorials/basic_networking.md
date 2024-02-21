@@ -4,7 +4,7 @@
 # Basic Networking Guide for Podman
 
 
-It seems once people master the basics of containers, networking is one of the first
+It seems once people understand the basics of containers, networking is one of the first
 aspects they begin experimenting with.  And regarding networking, it takes very
 little experimentation before ending up on the deep end of the pool.  The following
 guide shows the most common network setups for Podman rootful and rootless containers.
@@ -32,7 +32,7 @@ port mapping.  Depending on the firewall implementation, we have observed firewa
 ports being opened automatically due to running a container with a port mapping (for
 example).  If container traffic does not seem to work properly, check the firewall
 and allow traffic on ports the container is using. A common problem is that
-reloading the firewall deletes the cni/netavark iptables rules resulting in a loss of
+reloading the firewall deletes the netavark iptables rules resulting in a loss of
 network connectivity for rootful containers. Podman v3 provides the podman
 network reload command to restore this without having to restart the container.
 
@@ -128,7 +128,7 @@ client can connect to the container.
 
 Now run the container.
 ```
-$ podman run -dt --name webserver --net cni-podman1 -p 8081:80 quay.io/libpod/banner
+$ podman run -dt --name webserver --net podman1 -p 8081:80 quay.io/libpod/banner
 269fd0d6b2c8ed60f2ca41d7beceec2471d72fb9a33aa8ca45b81dc9a0abbb12
 ```
 Note in the above run command, the container’s port 80 (where the Nginx server is
@@ -167,23 +167,53 @@ is leased from a DHCP server like most other network clients on the network.  If
 the laptop is running a firewall, such as firewalld, then accommodations will need
 to be made for proper access.
 
+Note that Podman has to be run as root in order to use macvlan.
+
 #### Example
 
 The following example demonstrates how to set up a web container on a macvlan and
 how to access that container from outside the host.  First, create the macvlan network.
  You need to know the network interface on the host that connects to the routable
-network.  In the example case, it is eth0.  In Podman v4.0 if you need to use a leasable
-address, you should continue to use CNI instead of netavark.
+network.  In the example case, it is eth0.
 
 ```
 $ sudo podman network create -d macvlan -o parent=eth0 webnetwork
 webnetwork
 ```
-The next step is to ensure that the DHCP CNI plugin is running.  This plugin facilitates
-the DHCP lease from the network.
+
+The next step is to ensure that the DHCP service is running. This handles
+the DHCP leases from the network. If DHCP is not needed, the `--subnet` option
+can be used to assign a static subnet in the `network create` command above.
+
+CNI and netavark both use their own DHCP service; therefore, you need to know
+what backend you are using. To see what you are using, run this command:
+```
+$ sudo podman info --format {{.Host.NetworkBackend}}
+```
+If this command does not work, you are using an older version prior to Podman
+v4.0 which means you are using CNI.
+If the netavark backend is used, at least Podman v4.5 with netavark v1.6 is
+required to use DHCP.
+
+For netavark use:
+```
+$ sudo systemctl enable --now netavark-dhcp-proxy.socket
+```
+Or if the system doesn't use systemd, start the daemon manually:
+```
+$ /usr/libexec/podman/netavark dhcp-proxy --activity-timeout 0
+```
+
+With CNI use:
+```
+$ sudo systemctl enable --now cni-dhcp.socket
+```
+Or if the system doesn't use systemd, start the daemon manually:
 ```
 $ sudo /usr/libexec/cni/dhcp daemon
 ```
+Note that depending on the distribution, the binary location may differ.
+
 Now run the container and be certain to attach it to the network we created earlier.
 ```
 $ sudo podman run -dt --name webserver --network webnetwork quay.io/libpod/banner

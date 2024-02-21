@@ -58,9 +58,9 @@ Further note that `podman cp` does not support globbing (e.g., `cp dir/*.txt`). 
 
 #### **--archive**, **-a**
 
-Archive mode (copy all uid/gid information).
-When set to true, files copied to a container will have changed ownership to the primary UID/GID of the container.
-When set to false, maintain uid/gid from archive sources instead of changing them to the primary uid/gid of the destination container.
+Archive mode (copy all UID/GID information).
+When set to true, files copied to a container have changed ownership to the primary UID/GID of the container.
+When set to false, maintain UID/GID from archive sources instead of changing them to the primary UID/GID of the destination container.
 The default is **true**.
 
 #### **--overwrite**
@@ -101,35 +101,35 @@ the cp command.
 
 ## EXAMPLES
 
-- Copy a file from host to a container.
-  ```
-  podman cp /myapp/app.conf containerID:/myapp/app.conf
-  ```
+Copy a file from the host to a container:
+```
+podman cp /myapp/app.conf containerID:/myapp/app.conf
+```
 
-- Copy a file from a container to a directory on another container.
-  ```
-  podman cp containerID1:/myfile.txt containerID2:/tmp
-  ```
+Copy a file from a container to a directory on another container:
+```
+podman cp containerID1:/myfile.txt containerID2:/tmp
+```
 
-- Copy a directory on a container to a directory on the host.
-  ```
-  podman cp containerID:/myapp/ /myapp/
-  ```
+Copy a directory on a container to a directory on the host:
+```
+podman cp containerID:/myapp/ /myapp/
+```
 
-- Copy the contents of a directory on a container to a directory on the host.
-  ```
-  podman cp containerID:/home/myuser/. /home/myuser/
-  ```
+Copy the contents of a directory on a container to a directory on the host:
+```
+podman cp containerID:/home/myuser/. /home/myuser/
+```
 
-- Copy a directory on a container into a directory on another.
-  ```
-  podman cp containerA:/myapp containerB:/newapp
-  ```
+Copy a directory on a container into a directory on another:
+```
+podman cp containerA:/myapp containerB:/newapp
+```
 
-- Stream a tar archive from `STDIN` to a container.
-  ```
-  podman cp - containerID:/myfiles.tar.gz < myfiles.tar.gz
-  ```
+Stream a tar archive from `STDIN` to a container:
+```
+podman cp - containerID:/myfiles.tar.gz < myfiles.tar.gz
+```
 
 ## SEE ALSO
 **[podman(1)](podman.1.md)**, **[podman-mount(1)](podman-mount.1.md)**, **[podman-unmount(1)](podman-unmount.1.md)**

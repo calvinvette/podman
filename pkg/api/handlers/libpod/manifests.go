@@ -11,19 +11,20 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/common/libimage"
+	"github.com/containers/common/libimage/define"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/channel"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	envLib "github.com/containers/podman/v4/pkg/env"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils/apiutil"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/channel"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	envLib "github.com/containers/podman/v5/pkg/env"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/schema"
 	"github.com/opencontainers/go-digest"
@@ -80,7 +81,7 @@ func ManifestCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := http.StatusOK
-	if _, err := utils.SupportedVersion(r, "< 4.0.0"); err == utils.ErrVersionNotSupported {
+	if _, err := utils.SupportedVersion(r, "< 4.0.0"); err == apiutil.ErrVersionNotSupported {
 		status = http.StatusCreated
 	}
 
@@ -153,19 +154,26 @@ func ManifestInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imageEngine := abi.ImageEngine{Libpod: runtime}
-	opts := entities.ManifestInspectOptions{}
+	_, authfile, err := auth.GetCredentials(r)
+	if err != nil {
+		utils.Error(w, http.StatusBadRequest, err)
+		return
+	}
+	defer auth.RemoveAuthfile(authfile)
+
+	opts := entities.ManifestInspectOptions{Authfile: authfile}
 	if _, found := r.URL.Query()["tlsVerify"]; found {
 		opts.SkipTLSVerify = types.NewOptionalBool(!query.TLSVerify)
 	}
 
+	imageEngine := abi.ImageEngine{Libpod: runtime}
 	rawManifest, err := imageEngine.ManifestInspect(r.Context(), name, opts)
 	if err != nil {
 		utils.Error(w, http.StatusNotFound, err)
 		return
 	}
 
-	var schema2List libimage.ManifestListData
+	var schema2List define.ManifestListData
 	if err := json.Unmarshal(rawManifest, &schema2List); err != nil {
 		utils.Error(w, http.StatusInternalServerError, err)
 		return
@@ -326,12 +334,15 @@ func ManifestPush(w http.ResponseWriter, r *http.Request) {
 	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
 
 	query := struct {
-		All               bool   `schema:"all"`
-		CompressionFormat string `schema:"compressionFormat"`
-		Format            string `schema:"format"`
-		RemoveSignatures  bool   `schema:"removeSignatures"`
-		TLSVerify         bool   `schema:"tlsVerify"`
-		Quiet             bool   `schema:"quiet"`
+		All                    bool     `schema:"all"`
+		CompressionFormat      string   `schema:"compressionFormat"`
+		CompressionLevel       *int     `schema:"compressionLevel"`
+		ForceCompressionFormat bool     `schema:"forceCompressionFormat"`
+		Format                 string   `schema:"format"`
+		RemoveSignatures       bool     `schema:"removeSignatures"`
+		TLSVerify              bool     `schema:"tlsVerify"`
+		Quiet                  bool     `schema:"quiet"`
+		AddCompression         []string `schema:"addCompression"`
 	}{
 		// Add defaults here once needed.
 		TLSVerify: true,
@@ -363,14 +374,24 @@ func ManifestPush(w http.ResponseWriter, r *http.Request) {
 		password = authconf.Password
 	}
 	options := entities.ImagePushOptions{
-		All:               query.All,
-		Authfile:          authfile,
-		CompressionFormat: query.CompressionFormat,
-		Format:            query.Format,
-		Password:          password,
-		Quiet:             true,
-		RemoveSignatures:  query.RemoveSignatures,
-		Username:          username,
+		All:                    query.All,
+		Authfile:               authfile,
+		AddCompression:         query.AddCompression,
+		CompressionFormat:      query.CompressionFormat,
+		CompressionLevel:       query.CompressionLevel,
+		ForceCompressionFormat: query.ForceCompressionFormat,
+		Format:                 query.Format,
+		Password:               password,
+		Quiet:                  true,
+		RemoveSignatures:       query.RemoveSignatures,
+		Username:               username,
+	}
+	if _, found := r.URL.Query()["compressionFormat"]; found {
+		if _, foundForceCompression := r.URL.Query()["forceCompressionFormat"]; !foundForceCompression {
+			// If `compressionFormat` is set and no value for `forceCompressionFormat`
+			// is selected then default has to be `true`.
+			options.ForceCompressionFormat = true
+		}
 	}
 	if sys := runtime.SystemContext(); sys != nil {
 		options.CertDir = sys.DockerCertPath
@@ -468,12 +489,12 @@ func ManifestModify(w http.ResponseWriter, r *http.Request) {
 		}
 		annotations := make(map[string]string)
 		for _, annotationSpec := range body.ManifestAddOptions.Annotation {
-			spec := strings.SplitN(annotationSpec, "=", 2)
-			if len(spec) != 2 {
-				utils.Error(w, http.StatusBadRequest, fmt.Errorf("no value given for annotation %q", spec[0]))
+			key, val, hasVal := strings.Cut(annotationSpec, "=")
+			if !hasVal {
+				utils.Error(w, http.StatusBadRequest, fmt.Errorf("no value given for annotation %q", key))
 				return
 			}
-			annotations[spec[0]] = spec[1]
+			annotations[key] = val
 		}
 		body.ManifestAddOptions.Annotations = envLib.Join(body.ManifestAddOptions.Annotations, annotations)
 		body.ManifestAddOptions.Annotation = nil

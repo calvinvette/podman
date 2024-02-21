@@ -7,7 +7,7 @@ While "containers are Linux," Podman also runs on Mac and Windows, where it
 provides a native CLI and embeds a guest Linux system to launch your
 containers. This guest is referred to as a Podman machine and is managed with
 the `podman machine` command. On Windows, each Podman machine is backed by a
-virtualized Windows System for Linux (WSLv2) distribution. The podman command
+virtualized Windows Subsystem for Linux (WSLv2) distribution. The podman command
 can be run directly from your Windows PowerShell (or CMD) prompt, where it
 remotely communicates with the podman service running in the WSL environment.
 Alternatively, you can access Podman directly from the WSL instance if you
@@ -40,11 +40,9 @@ Installing Podman
 Installing the Windows Podman client begins by downloading the Podman Windows
 installer. The Windows installer is built with each Podman release and can be
 downloaded from the official
- [Github release page](https://github.com/containers/podman/releases). The
-Windows installer file is named podman-#.#.#-setup.exe, where the # symbols
-represent the version number of Podman. Be sure to download a 4.1 or later
-release for the capabilities discussed in this guide.
-As of 2022-11-09 the latest version is [v4.3.0](https://github.com/containers/podman/releases/download/v4.3.0/podman-v4.3.0-setup.exe).
+ [GitHub release page](https://github.com/containers/podman/releases).
+Be sure to download a 4.1 or later release for the capabilities discussed
+in this guide.
 
 ![Installing Podman 4.1.0](podman-win-install.jpg)
 
@@ -185,7 +183,7 @@ following PowerShell command in your terminal session:
 
 Or in a classic CMD prompt:
 
-        set DOCKER_HOST = 'npipe:////./pipe/podman-machine-default'
+        set DOCKER_HOST=npipe:////./pipe/podman-machine-default
 
 Alternatively, terminate the other process and restart podman machine.
 Machine "podman-machine-default" started successfully
@@ -217,8 +215,8 @@ podman machine set --rootful
 To restore rootless execution, set rootful to false:
 
 ```
-Podman machine stop
-Podman machine set --rootful=false
+podman machine stop
+podman machine set --rootful=false
 ```
 
 Another case in which you may wish to use rootful execution is binding a port
@@ -408,7 +406,7 @@ your WSL system state and perform a manual WSL installation using the `wsl
 2. Disable WSL Features
    ```
    dism.exe /online /disable-feature /featurename:Microsoft-Windows-Subsystem-Linux /norestart
-   dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /norestart
+   dism.exe /online /disable-feature /featurename:VirtualMachinePlatform /norestart
    ```
 3. Reboot
 4. Run manual WSL install

@@ -1,14 +1,12 @@
 //go:build !remote_testing
-// +build !remote_testing
 
 package integration
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/containers/podman/v4/pkg/rootless"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -25,7 +23,7 @@ func (p *PodmanTestIntegration) Podman(args []string) *PodmanSessionIntegration 
 // PodmanSystemdScope runs the podman command in a new systemd scope
 func (p *PodmanTestIntegration) PodmanSystemdScope(args []string) *PodmanSessionIntegration {
 	wrapper := []string{"systemd-run", "--scope"}
-	if rootless.IsRootless() {
+	if isRootless() {
 		wrapper = []string{"systemd-run", "--scope", "--user"}
 	}
 	podmanSession := p.PodmanAsUserBase(args, 0, 0, "", nil, false, false, wrapper, nil)
@@ -63,7 +61,7 @@ func PodmanTestCreate(tempDir string) *PodmanTestIntegration {
 func (p *PodmanTestIntegration) RestoreArtifact(image string) error {
 	tarball := imageTarPath(image)
 	if _, err := os.Stat(tarball); err == nil {
-		fmt.Printf("Restoring %s...\n", image)
+		GinkgoWriter.Printf("Restoring %s...\n", image)
 		restore := p.PodmanNoEvents([]string{"load", "-q", "-i", tarball})
 		restore.Wait(90)
 	}

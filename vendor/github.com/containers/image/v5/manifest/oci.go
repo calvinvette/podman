@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"strings"
 
-	internalManifest "github.com/containers/image/v5/internal/manifest"
+	"github.com/containers/image/v5/internal/manifest"
 	compressiontypes "github.com/containers/image/v5/pkg/compression/types"
 	"github.com/containers/image/v5/types"
 	ociencspec "github.com/containers/ocicrypt/spec"
+	chunkedToc "github.com/containers/storage/pkg/chunked/toc"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"golang.org/x/exp/slices"
 )
 
 // BlobInfoFromOCI1Descriptor returns a types.BlobInfo based on the input OCI1 descriptor.
@@ -41,7 +43,12 @@ type OCI1 struct {
 // useful for validation anyway.
 func SupportedOCI1MediaType(m string) error {
 	switch m {
-	case imgspecv1.MediaTypeDescriptor, imgspecv1.MediaTypeImageConfig, imgspecv1.MediaTypeImageLayer, imgspecv1.MediaTypeImageLayerGzip, imgspecv1.MediaTypeImageLayerNonDistributable, imgspecv1.MediaTypeImageLayerNonDistributableGzip, imgspecv1.MediaTypeImageLayerNonDistributableZstd, imgspecv1.MediaTypeImageLayerZstd, imgspecv1.MediaTypeImageManifest, imgspecv1.MediaTypeLayoutHeader, ociencspec.MediaTypeLayerEnc, ociencspec.MediaTypeLayerGzipEnc:
+	case imgspecv1.MediaTypeDescriptor, imgspecv1.MediaTypeImageConfig,
+		imgspecv1.MediaTypeImageLayer, imgspecv1.MediaTypeImageLayerGzip, imgspecv1.MediaTypeImageLayerZstd,
+		imgspecv1.MediaTypeImageLayerNonDistributable, imgspecv1.MediaTypeImageLayerNonDistributableGzip, imgspecv1.MediaTypeImageLayerNonDistributableZstd, //nolint:staticcheck // NonDistributable layers are deprecated, but we want to continue to support manipulating pre-existing images.
+		imgspecv1.MediaTypeImageManifest,
+		imgspecv1.MediaTypeLayoutHeader,
+		ociencspec.MediaTypeLayerEnc, ociencspec.MediaTypeLayerGzipEnc:
 		return nil
 	default:
 		return fmt.Errorf("unsupported OCIv1 media type: %q", m)
@@ -49,13 +56,13 @@ func SupportedOCI1MediaType(m string) error {
 }
 
 // OCI1FromManifest creates an OCI1 manifest instance from a manifest blob.
-func OCI1FromManifest(manifest []byte) (*OCI1, error) {
+func OCI1FromManifest(manifestBlob []byte) (*OCI1, error) {
 	oci1 := OCI1{}
-	if err := json.Unmarshal(manifest, &oci1); err != nil {
+	if err := json.Unmarshal(manifestBlob, &oci1); err != nil {
 		return nil, err
 	}
-	if err := validateUnambiguousManifestFormat(manifest, imgspecv1.MediaTypeImageIndex,
-		allowedFieldConfig|allowedFieldLayers); err != nil {
+	if err := manifest.ValidateUnambiguousManifestFormat(manifestBlob, imgspecv1.MediaTypeImageIndex,
+		manifest.AllowedFieldConfig|manifest.AllowedFieldLayers); err != nil {
 		return nil, err
 	}
 	return &oci1, nil
@@ -101,9 +108,9 @@ func (m *OCI1) LayerInfos() []LayerInfo {
 
 var oci1CompressionMIMETypeSets = []compressionMIMETypeSet{
 	{
-		mtsUncompressed:                    imgspecv1.MediaTypeImageLayerNonDistributable,
-		compressiontypes.GzipAlgorithmName: imgspecv1.MediaTypeImageLayerNonDistributableGzip,
-		compressiontypes.ZstdAlgorithmName: imgspecv1.MediaTypeImageLayerNonDistributableZstd,
+		mtsUncompressed:                    imgspecv1.MediaTypeImageLayerNonDistributable,     //nolint:staticcheck // NonDistributable layers are deprecated, but we want to continue to support manipulating pre-existing images.
+		compressiontypes.GzipAlgorithmName: imgspecv1.MediaTypeImageLayerNonDistributableGzip, //nolint:staticcheck // NonDistributable layers are deprecated, but we want to continue to support manipulating pre-existing images.
+		compressiontypes.ZstdAlgorithmName: imgspecv1.MediaTypeImageLayerNonDistributableZstd, //nolint:staticcheck // NonDistributable layers are deprecated, but we want to continue to support manipulating pre-existing images.
 	},
 	{
 		mtsUncompressed:                    imgspecv1.MediaTypeImageLayer,
@@ -160,14 +167,13 @@ func (m *OCI1) UpdateLayerInfos(layerInfos []types.BlobInfo) error {
 // getEncryptedMediaType will return the mediatype to its encrypted counterpart and return
 // an error if the mediatype does not support encryption
 func getEncryptedMediaType(mediatype string) (string, error) {
-	for _, s := range strings.Split(mediatype, "+")[1:] {
-		if s == "encrypted" {
-			return "", fmt.Errorf("unsupported mediaType: %v already encrypted", mediatype)
-		}
+	if slices.Contains(strings.Split(mediatype, "+")[1:], "encrypted") {
+		return "", fmt.Errorf("unsupported mediaType: %v already encrypted", mediatype)
 	}
 	unsuffixedMediatype := strings.Split(mediatype, "+")[0]
 	switch unsuffixedMediatype {
-	case DockerV2Schema2LayerMediaType, imgspecv1.MediaTypeImageLayer, imgspecv1.MediaTypeImageLayerNonDistributable:
+	case DockerV2Schema2LayerMediaType, imgspecv1.MediaTypeImageLayer,
+		imgspecv1.MediaTypeImageLayerNonDistributable: //nolint:staticcheck // NonDistributable layers are deprecated, but we want to continue to support manipulating pre-existing images.
 		return mediatype + "+encrypted", nil
 	}
 
@@ -178,7 +184,7 @@ func getEncryptedMediaType(mediatype string) (string, error) {
 // an error if the mediatype does not support decryption
 func getDecryptedMediaType(mediatype string) (string, error) {
 	if !strings.HasSuffix(mediatype, "+encrypted") {
-		return "", fmt.Errorf("unsupported mediaType to decrypt %v:", mediatype)
+		return "", fmt.Errorf("unsupported mediaType to decrypt: %v", mediatype)
 	}
 
 	return strings.TrimSuffix(mediatype, "+encrypted"), nil
@@ -197,7 +203,7 @@ func (m *OCI1) Inspect(configGetter func(types.BlobInfo) ([]byte, error)) (*type
 		// Most software calling this without human intervention is going to expect the values to be realistic and relevant,
 		// and is probably better served by failing; we can always re-visit that later if we fail now, but
 		// if we started returning some data for OCI artifacts now, we couldn’t start failing in this function later.
-		return nil, internalManifest.NewNonImageArtifactError(m.Config.MediaType)
+		return nil, manifest.NewNonImageArtifactError(&m.Manifest)
 	}
 
 	config, err := configGetter(m.ConfigInfo())
@@ -219,6 +225,7 @@ func (m *OCI1) Inspect(configGetter func(types.BlobInfo) ([]byte, error)) (*type
 		DockerVersion: d1.DockerVersion,
 		Labels:        v1.Config.Labels,
 		Architecture:  v1.Architecture,
+		Variant:       v1.Variant,
 		Os:            v1.OS,
 		Layers:        layerInfosToStrings(layerInfos),
 		LayersData:    imgInspectLayersFromLayerInfos(layerInfos),
@@ -229,7 +236,7 @@ func (m *OCI1) Inspect(configGetter func(types.BlobInfo) ([]byte, error)) (*type
 }
 
 // ImageID computes an ID which can uniquely identify this image by its contents.
-func (m *OCI1) ImageID([]digest.Digest) (string, error) {
+func (m *OCI1) ImageID(diffIDs []digest.Digest) (string, error) {
 	// The way m.Config.Digest “uniquely identifies” an image is
 	// by containing RootFS.DiffIDs, which identify the layers of the image.
 	// For non-image artifacts, the we can’t expect the config to change
@@ -247,13 +254,48 @@ func (m *OCI1) ImageID([]digest.Digest) (string, error) {
 	// (The only known caller of ImageID is storage/storageImageDestination.computeID,
 	// which can’t work with non-image artifacts.)
 	if m.Config.MediaType != imgspecv1.MediaTypeImageConfig {
-		return "", internalManifest.NewNonImageArtifactError(m.Config.MediaType)
+		return "", manifest.NewNonImageArtifactError(&m.Manifest)
 	}
 
 	if err := m.Config.Digest.Validate(); err != nil {
 		return "", err
 	}
+
+	// If there is any layer that is using partial content, we calculate the image ID
+	// in a different way since the diffID cannot be validated as for regular pulled images.
+	for _, layer := range m.Layers {
+		toc, err := chunkedToc.GetTOCDigest(layer.Annotations)
+		if err != nil {
+			return "", fmt.Errorf("error looking up annotation for layer %q: %w", layer.Digest, err)
+		}
+		if toc != nil {
+			return m.calculateImageIDForPartialImage(diffIDs)
+		}
+	}
+
 	return m.Config.Digest.Hex(), nil
+}
+
+func (m *OCI1) calculateImageIDForPartialImage(diffIDs []digest.Digest) (string, error) {
+	newID := digest.Canonical.Digester()
+	for i, layer := range m.Layers {
+		diffID := diffIDs[i]
+		_, err := newID.Hash().Write([]byte(diffID.Hex()))
+		if err != nil {
+			return "", fmt.Errorf("error writing diffID %q: %w", diffID, err)
+		}
+		toc, err := chunkedToc.GetTOCDigest(layer.Annotations)
+		if err != nil {
+			return "", fmt.Errorf("error looking up annotation for layer %q: %w", layer.Digest, err)
+		}
+		if toc != nil {
+			_, err = newID.Hash().Write([]byte(toc.Hex()))
+			if err != nil {
+				return "", fmt.Errorf("error writing TOC %q: %w", toc, err)
+			}
+		}
+	}
+	return newID.Digest().Hex(), nil
 }
 
 // CanChangeLayerCompression returns true if we can compress/decompress layers with mimeType in the current image

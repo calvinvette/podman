@@ -26,8 +26,7 @@ const (
 	// Package is the name of this package, used in help output and to
 	// identify working containers.
 	Package = define.Package
-	// Version for the Package.  Bump version in contrib/rpm/buildah.spec
-	// too.
+	// Version for the Package.
 	Version = define.Version
 	// The value we use to identify what type of information, currently a
 	// serialized Builder structure, we are using as per-container state.
@@ -158,6 +157,10 @@ type Builder struct {
 	// NetworkInterface is the libnetwork network interface used to setup CNI or netavark networks.
 	NetworkInterface nettypes.ContainerNetwork `json:"-"`
 
+	// GroupAdd is a list of groups to add to the primary process within
+	// the container. 'keep-groups' allows container processes to use
+	// supplementary groups.
+	GroupAdd []string
 	// ID mapping options to use when running processes in the container with non-host user namespaces.
 	IDMappingOptions define.IDMappingOptions
 	// Capabilities is a list of capabilities to use when running commands in the container.
@@ -190,6 +193,7 @@ type BuilderInfo struct {
 	FromImage             string
 	FromImageID           string
 	FromImageDigest       string
+	GroupAdd              []string
 	Config                string
 	Manifest              string
 	Container             string
@@ -229,6 +233,7 @@ func GetBuildInfo(b *Builder) BuilderInfo {
 		Manifest:              string(b.Manifest),
 		Container:             b.Container,
 		ContainerID:           b.ContainerID,
+		GroupAdd:              b.GroupAdd,
 		MountPoint:            b.MountPoint,
 		ProcessLabel:          b.ProcessLabel,
 		MountLabel:            b.MountLabel,
@@ -277,6 +282,7 @@ type BuilderOptions struct {
 	// to store copies of layer blobs that we pull down, if any.  It should
 	// already exist.
 	BlobDirectory string
+	GroupAdd      []string
 	// Logger is the logrus logger to write log messages with
 	Logger *logrus.Logger `json:"-"`
 	// Mount signals to NewBuilder() that the container should be mounted
@@ -343,6 +349,12 @@ type BuilderOptions struct {
 	ProcessLabel string
 	// MountLabel is the SELinux mount label associated with the container
 	MountLabel string
+	// PreserveBaseImageAnns indicates that we should preserve base
+	// image information (Annotations) that are present in our base image,
+	// rather than overwriting them with information about the base image
+	// itself. Useful as an internal implementation detail of multistage
+	// builds, and does not need to be set by most callers.
+	PreserveBaseImageAnns bool
 }
 
 // ImportOptions are used to initialize a Builder from an existing container
@@ -373,6 +385,15 @@ type ImportFromImageOptions struct {
 	// that don't include a domain portion.
 	SystemContext *types.SystemContext
 }
+
+// ConfidentialWorkloadOptions encapsulates options which control whether or not
+// we output an image whose rootfs contains a LUKS-compatibly-encrypted disk image
+// instead of the usual rootfs contents.
+type ConfidentialWorkloadOptions = define.ConfidentialWorkloadOptions
+
+// SBOMScanOptions encapsulates options which control whether or not we run a
+// scanner on the rootfs that we're about to commit, and how.
+type SBOMScanOptions = define.SBOMScanOptions
 
 // NewBuilder creates a new build container.
 func NewBuilder(ctx context.Context, store storage.Store, options BuilderOptions) (*Builder, error) {
@@ -421,6 +442,9 @@ func OpenBuilder(store storage.Store, container string) (*Builder, error) {
 	b.store = store
 	b.fixupConfig(nil)
 	b.setupLogger()
+	if b.CommonBuildOpts == nil {
+		b.CommonBuildOpts = &CommonBuildOptions{}
+	}
 	return b, nil
 }
 
@@ -457,6 +481,9 @@ func OpenBuilderByPath(store storage.Store, path string) (*Builder, error) {
 			b.store = store
 			b.fixupConfig(nil)
 			b.setupLogger()
+			if b.CommonBuildOpts == nil {
+				b.CommonBuildOpts = &CommonBuildOptions{}
+			}
 			return b, nil
 		}
 		if err != nil {
@@ -494,6 +521,9 @@ func OpenAllBuilders(store storage.Store) (builders []*Builder, err error) {
 			b.store = store
 			b.setupLogger()
 			b.fixupConfig(nil)
+			if b.CommonBuildOpts == nil {
+				b.CommonBuildOpts = &CommonBuildOptions{}
+			}
 			builders = append(builders, b)
 			continue
 		}

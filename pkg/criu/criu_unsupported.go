@@ -1,10 +1,11 @@
 //go:build !linux
-// +build !linux
 
 package criu
 
-func CheckForCriu(version int) bool {
-	return false
+import "fmt"
+
+func CheckForCriu(version int) error {
+	return fmt.Errorf("CheckForCriu not supported on this platform")
 }
 
 func MemTrack() bool {

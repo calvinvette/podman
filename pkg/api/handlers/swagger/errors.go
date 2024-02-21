@@ -2,7 +2,7 @@
 package swagger
 
 import (
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 )
 
 // Error model embedded in swagger:response to aid in documentation generation
@@ -24,6 +24,13 @@ type containerNotFound struct {
 // No such network
 // swagger:response
 type networkNotFound struct {
+	// in:body
+	Body errorhandling.ErrorModel
+}
+
+// Network is already connected and container is running or transitioning to the running state ('initialized')
+// swagger:response
+type networkConnectedError struct {
 	// in:body
 	Body errorhandling.ErrorModel
 }

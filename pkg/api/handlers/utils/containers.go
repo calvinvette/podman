@@ -6,19 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/events"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod/events"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 
-	"github.com/containers/podman/v4/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers"
 	"github.com/sirupsen/logrus"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 
-	"github.com/containers/podman/v4/libpod"
+	"github.com/containers/podman/v5/libpod"
 	"github.com/gorilla/schema"
 )
 
@@ -27,8 +28,8 @@ type waitQueryDocker struct {
 }
 
 type waitQueryLibpod struct {
-	Interval  string                   `schema:"interval"`
-	Condition []define.ContainerStatus `schema:"condition"`
+	Interval   string   `schema:"interval"`
+	Conditions []string `schema:"condition"`
 }
 
 func WaitContainerDocker(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +44,7 @@ func WaitContainerDocker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	interval := time.Nanosecond
+	interval := time.Millisecond * 250
 
 	condition := "not-running"
 	if _, found := r.URL.Query()["condition"]; found {
@@ -117,19 +118,27 @@ func WaitContainerLibpod(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	containerEngine := &abi.ContainerEngine{Libpod: runtime}
+	opts := entities.WaitOptions{
+		Conditions: query.Conditions,
+		Interval:   interval,
+	}
 	name := GetName(r)
-
-	waitFn := createContainerWaitFn(r.Context(), name, interval)
-	exitCode, err := waitFn(query.Condition...)
+	reports, err := containerEngine.ContainerWait(r.Context(), []string{name}, opts)
 	if err != nil {
 		if errors.Is(err, define.ErrNoSuchCtr) {
 			ContainerNotFound(w, name, err)
 			return
 		}
 		InternalServerError(w, err)
+	}
+	if len(reports) != 1 {
+		Error(w, http.StatusInternalServerError, fmt.Errorf("the ContainerWait() function returned unexpected count of reports: %d", len(reports)))
 		return
 	}
-	WriteResponse(w, http.StatusOK, strconv.Itoa(int(exitCode)))
+
+	WriteResponse(w, http.StatusOK, strconv.Itoa(int(reports[0].ExitCode)))
 }
 
 type containerWaitFn func(conditions ...define.ContainerStatus) (int32, error)
@@ -139,9 +148,13 @@ func createContainerWaitFn(ctx context.Context, containerName string, interval t
 	var containerEngine entities.ContainerEngine = &abi.ContainerEngine{Libpod: runtime}
 
 	return func(conditions ...define.ContainerStatus) (int32, error) {
+		var rawConditions []string
+		for _, con := range conditions {
+			rawConditions = append(rawConditions, con.String())
+		}
 		opts := entities.WaitOptions{
-			Condition: conditions,
-			Interval:  interval,
+			Conditions: rawConditions,
+			Interval:   interval,
 		}
 		ctrWaitReport, err := containerEngine.ContainerWait(ctx, []string{containerName}, opts)
 		if err != nil {
@@ -188,11 +201,21 @@ var notRunningStates = []define.ContainerStatus{
 }
 
 func waitRemoved(ctrWait containerWaitFn) (int32, error) {
-	code, err := ctrWait(define.ContainerStateUnknown)
-	if err != nil && errors.Is(err, define.ErrNoSuchCtr) {
-		return code, nil
+	var code int32
+	for {
+		c, err := ctrWait(define.ContainerStateExited)
+		if errors.Is(err, define.ErrNoSuchCtr) {
+			// Make sure to wait until the container has been removed.
+			break
+		}
+		if err != nil {
+			return code, err
+		}
+		// If the container doesn't exist, the return code is -1, so
+		// only set it in case of success.
+		code = c
 	}
-	return code, err
+	return code, nil
 }
 
 func waitNextExit(ctx context.Context, containerName string) (int32, error) {
@@ -215,7 +238,10 @@ func waitNextExit(ctx context.Context, containerName string) (int32, error) {
 
 	evt, ok := <-eventChannel
 	if ok {
-		return int32(evt.ContainerExitCode), nil
+		if evt.ContainerExitCode != nil {
+			return int32(*evt.ContainerExitCode), nil
+		}
+		return -1, nil
 	}
 	// if ok == false then containerEngine.Events() has exited
 	// it may happen if request was canceled (e.g. client closed connection prematurely) or
@@ -237,4 +263,24 @@ func containerExists(ctx context.Context, name string) (bool, error) {
 		return false, err
 	}
 	return ctrExistRep.Value, nil
+}
+
+// PSTitles merges CAPS headers from ps output. All PS headers are single words, except for
+// CAPS. Function compines CAP Headers into single field separated by a space.
+func PSTitles(output string) []string {
+	var titles []string
+
+	for _, title := range strings.Fields(output) {
+		switch title {
+		case "AMBIENT", "INHERITED", "PERMITTED", "EFFECTIVE", "BOUNDING":
+			{
+				titles = append(titles, title+" CAPS")
+			}
+		case "CAPS":
+			continue
+		default:
+			titles = append(titles, title)
+		}
+	}
+	return titles
 }

@@ -6,14 +6,15 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/bindings/volumes"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	. "github.com/onsi/ginkgo"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings/volumes"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
+	"golang.org/x/exp/slices"
 )
 
 var _ = Describe("Podman volumes", func() {
@@ -117,7 +118,7 @@ var _ = Describe("Podman volumes", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(vols).To(HaveLen(5))
 		for _, v := range vols {
-			Expect(StringInSlice(v.Name, volNames)).To(BeTrue())
+			Expect(slices.Contains(volNames, v.Name)).To(BeTrue())
 		}
 
 		// list with bad filter should be 500

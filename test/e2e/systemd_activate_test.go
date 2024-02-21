@@ -2,9 +2,9 @@ package integration
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,29 +12,17 @@ import (
 	"syscall"
 	"time"
 
-	testUtils "github.com/containers/podman/v4/test/utils"
-	podmanUtils "github.com/containers/podman/v4/utils"
-	. "github.com/onsi/ginkgo"
+	testUtils "github.com/containers/podman/v5/test/utils"
+	podmanUtils "github.com/containers/podman/v5/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Systemd activate", func() {
-	var tempDir string
-	var err error
-	var podmanTest *PodmanTestIntegration
 	var activate string
 
 	BeforeEach(func() {
-		tempDir, err = testUtils.CreateTempDirInTempDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
-			os.Exit(1)
-		}
-
-		podmanTest = PodmanTestCreate(tempDir)
-		podmanTest.Setup()
-
 		SkipIfRemote("Testing stopped service requires both podman and podman-remote binaries")
 
 		activate, err = exec.LookPath("systemd-socket-activate")
@@ -52,11 +40,6 @@ var _ = Describe("Systemd activate", func() {
 		}
 	})
 
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		processTestResult(CurrentGinkgoTestDescription())
-	})
-
 	It("stop podman.service", func() {
 		// systemd-socket-activate does not support DNS lookups
 		host := "127.0.0.1"
@@ -64,40 +47,52 @@ var _ = Describe("Systemd activate", func() {
 		Expect(err).ToNot(HaveOccurred())
 		addr := net.JoinHostPort(host, strconv.Itoa(port))
 
-		activateSession := testUtils.StartSystemExec(activate, []string{
+		podmanOptions := podmanTest.makeOptions(nil, false, false)
+
+		systemdArgs := []string{
 			"-E", "http_proxy", "-E", "https_proxy", "-E", "no_proxy",
 			"-E", "HTTP_PROXY", "-E", "HTTPS_PROXY", "-E", "NO_PROXY",
+			"-E", "XDG_RUNTIME_DIR", "-E", "CI_DESIRED_DATABASE",
 			"--listen", addr,
-			podmanTest.PodmanBinary,
-			"--root=" + filepath.Join(tempDir, "server_root"),
-			"system", "service",
-			"--time=0",
-		})
-		Expect(activateSession.Exited).ShouldNot(Receive(), "Failed to start podman service")
+			podmanTest.PodmanBinary}
+		systemdArgs = append(systemdArgs, podmanOptions...)
+		systemdArgs = append(systemdArgs, "system", "service", "--time=0")
 
-		// Curried functions for specialized podman calls
+		activateSession := testUtils.StartSystemExec(activate, systemdArgs)
+		Expect(activateSession.Exited).ShouldNot(Receive(), "Failed to start podman service")
+		WaitForService(url.URL{Scheme: "tcp", Host: addr})
+		defer activateSession.Signal(syscall.SIGTERM)
+
+		// Create custom functions for running podman and
+		// podman-remote.  This test is a rare exception where both
+		// binaries need to be run in parallel.  Usually, the remote
+		// and non-remote details are hidden.  Yet we use the
+		// `podmanOptions` above to make sure all settings (root,
+		// runroot, events, tmpdir, etc.) are used as in other e2e
+		// tests.
 		podmanRemote := func(args ...string) *testUtils.PodmanSession {
 			args = append([]string{"--url", "tcp://" + addr}, args...)
 			return testUtils.SystemExec(podmanTest.RemotePodmanBinary, args)
 		}
 
 		podman := func(args ...string) *testUtils.PodmanSession {
-			args = append([]string{"--root", filepath.Join(tempDir, "server_root")}, args...)
+			args = append(podmanOptions, args...)
 			return testUtils.SystemExec(podmanTest.PodmanBinary, args)
 		}
 
 		containerName := "top_" + testUtils.RandomString(8)
 		apiSession := podmanRemote(
 			"create", "--tty", "--name", containerName, "--entrypoint", "top",
-			"quay.io/libpod/alpine_labels:latest",
+			ALPINE,
 		)
-		Expect(apiSession).Should(Exit(0))
+		Expect(apiSession).Should(testUtils.ExitCleanly())
+		defer podman("rm", "-f", containerName)
 
 		apiSession = podmanRemote("start", containerName)
-		Expect(apiSession).Should(Exit(0))
+		Expect(apiSession).Should(testUtils.ExitCleanly())
 
 		apiSession = podmanRemote("inspect", "--format={{.State.Running}}", containerName)
-		Expect(apiSession).Should(Exit(0))
+		Expect(apiSession).Should(testUtils.ExitCleanly())
 		Expect(apiSession.OutputToString()).To(Equal("true"))
 
 		// Emulate 'systemd stop podman.service'
@@ -106,7 +101,7 @@ var _ = Describe("Systemd activate", func() {
 		Eventually(activateSession).Should(Exit(0))
 
 		abiSession := podman("inspect", "--format={{.State.Running}}", containerName)
-		Expect(abiSession).To(Exit(0))
+		Expect(abiSession).To(testUtils.ExitCleanly())
 		Expect(abiSession.OutputToString()).To(Equal("true"))
 	})
 
@@ -119,9 +114,9 @@ var _ = Describe("Systemd activate", func() {
 
 		// start systemd activation with datagram socket
 		activateSession := testUtils.StartSystemExec(activate, []string{
-			"--datagram", "--listen", addr,
+			"--datagram", "--listen", addr, "-E", "CI_DESIRED_DATABASE",
 			podmanTest.PodmanBinary,
-			"--root=" + filepath.Join(tempDir, "server_root"),
+			"--root=" + filepath.Join(tempdir, "server_root"),
 			"system", "service",
 			"--time=0",
 		})

@@ -1,5 +1,4 @@
 //go:build darwin
-// +build darwin
 
 package main
 
@@ -72,8 +71,8 @@ type launchParams struct {
 
 var installCmd = &cobra.Command{
 	Use:    "install",
-	Short:  "installs the podman helper agent",
-	Long:   "installs the podman helper agent, which manages the /var/run/docker.sock link",
+	Short:  "Install the podman helper agent",
+	Long:   "Install the podman helper agent, which manages the /var/run/docker.sock link",
 	PreRun: silentUsage,
 	RunE:   install,
 }
@@ -93,7 +92,8 @@ func install(cmd *cobra.Command, args []string) error {
 	fileName := filepath.Join("/Library", "LaunchDaemons", labelName)
 
 	if _, err := os.Stat(fileName); err == nil || !os.IsNotExist(err) {
-		return errors.New("helper is already installed, uninstall first")
+		fmt.Fprintln(os.Stderr, "helper is already installed, skipping the install, uninstall first if you want to reinstall")
+		return nil
 	}
 
 	prog, err := installExecutable(userName)

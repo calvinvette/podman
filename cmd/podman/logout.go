@@ -6,8 +6,8 @@ import (
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -15,7 +15,7 @@ var (
 	logoutOptions = auth.LogoutOptions{}
 	logoutCommand = &cobra.Command{
 		Use:               "logout [options] [REGISTRY]",
-		Short:             "Logout of a container registry",
+		Short:             "Log out of a container registry",
 		Long:              "Remove the cached username and password for the registry.",
 		RunE:              logout,
 		Args:              cobra.MaximumNArgs(1),
@@ -48,9 +48,7 @@ func init() {
 
 // Implementation of podman-logout.
 func logout(cmd *cobra.Command, args []string) error {
-	sysCtx := &types.SystemContext{
-		AuthFilePath: logoutOptions.AuthFile,
-	}
+	sysCtx := &types.SystemContext{}
 	setRegistriesConfPath(sysCtx)
 	return auth.Logout(sysCtx, &logoutOptions, args)
 }

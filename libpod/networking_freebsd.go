@@ -1,5 +1,4 @@
-//go:build freebsd
-// +build freebsd
+//go:build !remote
 
 package libpod
 
@@ -14,6 +13,7 @@ import (
 
 	"github.com/containers/buildah/pkg/jail"
 	"github.com/containers/common/libnetwork/types"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/storage/pkg/lockfile"
 	"github.com/sirupsen/logrus"
 )
@@ -46,33 +46,6 @@ type NetstatAddress struct {
 	Collisions uint64 `json:"collisions"`
 }
 
-// copied from github.com/vishvanada/netlink which does not build on freebsd
-type LinkStatistics64 struct {
-	RxPackets         uint64
-	TxPackets         uint64
-	RxBytes           uint64
-	TxBytes           uint64
-	RxErrors          uint64
-	TxErrors          uint64
-	RxDropped         uint64
-	TxDropped         uint64
-	Multicast         uint64
-	Collisions        uint64
-	RxLengthErrors    uint64
-	RxOverErrors      uint64
-	RxCrcErrors       uint64
-	RxFrameErrors     uint64
-	RxFifoErrors      uint64
-	RxMissedErrors    uint64
-	TxAbortedErrors   uint64
-	TxCarrierErrors   uint64
-	TxFifoErrors      uint64
-	TxHeartbeatErrors uint64
-	TxWindowErrors    uint64
-	RxCompressed      uint64
-	TxCompressed      uint64
-}
-
 type RootlessNetNS struct {
 	dir  string
 	Lock *lockfile.LockFile
@@ -98,21 +71,25 @@ func (r *RootlessNetNS) Cleanup(runtime *Runtime) error {
 }
 
 // GetRootlessNetNs returns the rootless netns object. If create is set to true
-// the rootless network namespace will be created if it does not exists already.
+// the rootless network namespace will be created if it does not already exist.
 // If called as root it returns always nil.
 // On success the returned RootlessCNI lock is locked and must be unlocked by the caller.
 func (r *Runtime) GetRootlessNetNs(new bool) (*RootlessNetNS, error) {
 	return nil, nil
 }
 
-func GetSlirp4netnsIP(subnet *net.IPNet) (*net.IP, error) {
+func getSlirp4netnsIP(subnet *net.IPNet) (*net.IP, error) {
 	return nil, errors.New("not implemented GetSlirp4netnsIP")
 }
 
-// While there is code in container_internal.go which calls this, in
-// my testing network creation always seems to go through createNetNS.
+// This is called after the container's jail is created but before its
+// started. We can use this to initialise the container's vnet when we don't
+// have a separate vnet jail (which is the case in FreeBSD 13.3 and later).
 func (r *Runtime) setupNetNS(ctr *Container) error {
-	return errors.New("not implemented (*Runtime) setupNetNS")
+	networkStatus, err := r.configureNetNS(ctr, ctr.ID())
+	ctr.state.NetNS = ctr.ID()
+	ctr.state.NetworkStatus = networkStatus
+	return err
 }
 
 // Create and configure a new network namespace for a container
@@ -197,26 +174,30 @@ func (r *Runtime) teardownNetNS(ctr *Container) error {
 	}
 
 	if ctr.state.NetNS != "" {
-		// Rather than destroying the jail immediately, reset the
-		// persist flag so that it will live until the container is
-		// done.
-		netjail, err := jail.FindByName(ctr.state.NetNS)
-		if err != nil {
-			return fmt.Errorf("finding network jail %s: %w", ctr.state.NetNS, err)
+		// If PostConfigureNetNS is false, then we are running with a
+		// separate vnet jail so we need to clean that up now.
+		if !ctr.config.PostConfigureNetNS {
+			// Rather than destroying the jail immediately, reset the
+			// persist flag so that it will live until the container is
+			// done.
+			netjail, err := jail.FindByName(ctr.state.NetNS)
+			if err != nil {
+				return fmt.Errorf("finding network jail %s: %w", ctr.state.NetNS, err)
+			}
+			jconf := jail.NewConfig()
+			jconf.Set("persist", false)
+			if err := netjail.Set(jconf); err != nil {
+				return fmt.Errorf("releasing network jail %s: %w", ctr.state.NetNS, err)
+			}
 		}
-		jconf := jail.NewConfig()
-		jconf.Set("persist", false)
-		if err := netjail.Set(jconf); err != nil {
-			return fmt.Errorf("releasing network jail %s: %w", ctr.state.NetNS, err)
-		}
-
 		ctr.state.NetNS = ""
 	}
-
 	return nil
 }
 
-func getContainerNetIO(ctr *Container) (*LinkStatistics64, error) {
+// TODO (5.0): return the statistics per network interface
+// This would allow better compat with docker.
+func getContainerNetIO(ctr *Container) (map[string]define.ContainerNetworkStats, error) {
 	if ctr.state.NetNS == "" {
 		// If NetNS is nil, it was set as none, and no netNS
 		// was set up this is a valid state and thus return no
@@ -224,38 +205,54 @@ func getContainerNetIO(ctr *Container) (*LinkStatistics64, error) {
 		return nil, nil
 	}
 
-	// FIXME get the interface from the container netstatus
-	cmd := exec.Command("jexec", ctr.state.NetNS, "netstat", "-bI", "eth0", "--libxo", "json")
+	// First try running 'netstat -j' - this lets us retrieve stats from
+	// containers which don't have a separate vnet jail.
+	cmd := exec.Command("netstat", "-j", ctr.state.NetNS, "-bi", "--libxo", "json")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, err
+		// Fall back to using jexec so that this still works on 13.2
+		// which does not have the -j flag.
+		cmd := exec.Command("jexec", ctr.state.NetNS, "netstat", "-bi", "--libxo", "json")
+		out, err = cmd.Output()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read network stats: %v", err)
 	}
 	stats := Netstat{}
 	if err := jdec.Unmarshal(out, &stats); err != nil {
 		return nil, err
 	}
 
-	// Find the link stats
+	res := make(map[string]define.ContainerNetworkStats)
+
+	// Sum all the interface stats - in practice only Tx/TxBytes are needed
 	for _, ifaddr := range stats.Statistics.Interface {
+		// Each interface has two records, one for link-layer which has
+		// an MTU field and one for IP which doesn't. We only want the
+		// link-layer stats.
+		//
+		// It's not clear if we should include loopback stats here but
+		// if we move to per-interface stats in future, this can be
+		// reported separately.
 		if ifaddr.Mtu > 0 {
-			return &LinkStatistics64{
-				RxPackets:  ifaddr.ReceivedPackets,
-				TxPackets:  ifaddr.SentPackets,
-				RxBytes:    ifaddr.ReceivedBytes,
-				TxBytes:    ifaddr.SentBytes,
-				RxErrors:   ifaddr.ReceivedErrors,
-				TxErrors:   ifaddr.SentErrors,
-				RxDropped:  ifaddr.DroppedPackets,
-				Collisions: ifaddr.Collisions,
-			}, nil
+			linkStats := define.ContainerNetworkStats{
+				RxPackets: ifaddr.ReceivedPackets,
+				TxPackets: ifaddr.SentPackets,
+				RxBytes:   ifaddr.ReceivedBytes,
+				TxBytes:   ifaddr.SentBytes,
+				RxErrors:  ifaddr.ReceivedErrors,
+				TxErrors:  ifaddr.SentErrors,
+				RxDropped: ifaddr.DroppedPackets,
+			}
+			res[ifaddr.Name] = linkStats
 		}
 	}
 
-	return &LinkStatistics64{}, nil
+	return res, nil
 }
 
-func (c *Container) joinedNetworkNSPath() string {
-	return c.state.NetNS
+func (c *Container) joinedNetworkNSPath() (string, bool) {
+	return c.state.NetNS, false
 }
 
 func (c *Container) inspectJoinedNetworkNS(networkns string) (q types.StatusBlock, retErr error) {
@@ -270,4 +267,8 @@ func (c *Container) reloadRootlessRLKPortMapping() error {
 
 func (c *Container) setupRootlessNetwork() error {
 	return nil
+}
+
+func getPastaIP(state *ContainerState) (net.IP, error) {
+	return nil, fmt.Errorf("pasta networking is Linux only")
 }

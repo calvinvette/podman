@@ -1,3 +1,5 @@
+//go:build !remote
+
 package generate
 
 import (
@@ -9,25 +11,57 @@ import (
 	"path/filepath"
 	"strings"
 
-	cdi "github.com/container-orchestrated-devices/container-device-interface/pkg/cdi"
 	"github.com/containers/common/libimage"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/namespaces"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/util"
-	spec "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/containers/common/libnetwork/pasta"
+	"github.com/containers/common/libnetwork/slirp4netns"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/namespaces"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/util"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/sirupsen/logrus"
+	"tags.cncf.io/container-device-interface/pkg/parser"
 )
 
 // MakeContainer creates a container based on the SpecGenerator.
 // Returns the created, container and any warnings resulting from creating the
 // container, or an error.
-func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGenerator, clone bool, c *libpod.Container) (*spec.Spec, *specgen.SpecGenerator, []libpod.CtrCreateOption, error) {
+func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGenerator, clone bool, c *libpod.Container) (*specs.Spec, *specgen.SpecGenerator, []libpod.CtrCreateOption, error) {
 	rtc, err := rt.GetConfigNoCopy()
 	if err != nil {
 		return nil, nil, nil, err
+	}
+
+	rlimits, err := specgenutil.GenRlimits(rtc.Ulimits())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	s.Rlimits = append(rlimits, s.Rlimits...)
+
+	if s.OOMScoreAdj == nil {
+		s.OOMScoreAdj = rtc.Containers.OOMScoreAdj
+	}
+
+	if len(rtc.Containers.CgroupConf.Get()) > 0 {
+		if s.ResourceLimits == nil {
+			s.ResourceLimits = &specs.LinuxResources{}
+		}
+		if s.ResourceLimits.Unified == nil {
+			s.ResourceLimits.Unified = make(map[string]string)
+		}
+		for _, cgroupConf := range rtc.Containers.CgroupConf.Get() {
+			key, val, hasVal := strings.Cut(cgroupConf, "=")
+			if !hasVal {
+				return nil, nil, nil, fmt.Errorf("CgroupConf %s from containers.conf invalid, must be name=value", cgroupConf)
+			}
+			if _, ok := s.ResourceLimits.Unified[key]; !ok {
+				s.ResourceLimits.Unified[key] = val
+			}
+		}
 	}
 
 	// If joining a pod, retrieve the pod for use, and its infra container
@@ -48,9 +82,9 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 
 	options := []libpod.CtrCreateOption{}
 	compatibleOptions := &libpod.InfraInherit{}
-	var infraSpec *spec.Spec
+	var infraSpec *specs.Spec
 	if infra != nil {
-		options, infraSpec, compatibleOptions, err = Inherit(*infra, s, rt)
+		options, infraSpec, compatibleOptions, err = Inherit(infra, s, rt)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -118,7 +152,11 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 	}
 
 	if s.Rootfs != "" {
-		options = append(options, libpod.WithRootFS(s.Rootfs, s.RootfsOverlay))
+		rootfsOverlay := false
+		if s.RootfsOverlay != nil {
+			rootfsOverlay = *s.RootfsOverlay
+		}
+		options = append(options, libpod.WithRootFS(s.Rootfs, rootfsOverlay, s.RootfsMapping))
 	}
 
 	newImage, resolvedImageName, imageData, err := getImageFromSpec(ctx, rt, s)
@@ -152,9 +190,33 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 
 	_, err = rt.LookupPod(s.Hostname)
 	if len(s.Hostname) > 0 && !s.UtsNS.IsPrivate() && err == nil {
-		// ok, we are incorrectly setting the pod as the hostname, lets undo that before validation
+		// ok, we are incorrectly setting the pod as the hostname, let's undo that before validation
 		s.Hostname = ""
 	}
+
+	// Set defaults if network info is not provided
+	if s.NetNS.IsPrivate() || s.NetNS.IsDefault() {
+		if rootless.IsRootless() {
+			// when we are rootless we default to default_rootless_network_cmd from containers.conf
+			conf, err := rt.GetConfigNoCopy()
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			switch conf.Network.DefaultRootlessNetworkCmd {
+			case slirp4netns.BinaryName, "":
+				s.NetNS.NSMode = specgen.Slirp
+			case pasta.BinaryName:
+				s.NetNS.NSMode = specgen.Pasta
+			default:
+				return nil, nil, nil, fmt.Errorf("invalid default_rootless_network_cmd option %q",
+					conf.Network.DefaultRootlessNetworkCmd)
+			}
+		} else {
+			// as root default to bridge
+			s.NetNS.NSMode = specgen.Bridge
+		}
+	}
+
 	if err := s.Validate(); err != nil {
 		return nil, nil, nil, fmt.Errorf("invalid config provided: %w", err)
 	}
@@ -168,12 +230,9 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 		options = append(options, libpod.WithHostUsers(s.HostUsers))
 	}
 
-	command, err := makeCommand(s, imageData, rtc)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	command := makeCommand(s, imageData)
 
-	infraVol := (len(compatibleOptions.Mounts) > 0 || len(compatibleOptions.Volumes) > 0 || len(compatibleOptions.ImageVolumes) > 0 || len(compatibleOptions.OverlayVolumes) > 0)
+	infraVol := len(compatibleOptions.Mounts) > 0 || len(compatibleOptions.Volumes) > 0 || len(compatibleOptions.ImageVolumes) > 0 || len(compatibleOptions.OverlayVolumes) > 0
 	opts, err := createContainerOptions(rt, s, pod, finalVolumes, finalOverlays, imageData, command, infraVol, *compatibleOptions)
 	if err != nil {
 		return nil, nil, nil, err
@@ -192,6 +251,9 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 		options = append(options, opts...)
 	}
 	runtimeSpec, err := SpecGenToOCI(ctx, s, rt, rtc, newImage, finalMounts, pod, command, compatibleOptions)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	if clone { // the container fails to start if cloned due to missing Linux spec entries
 		if c == nil {
 			return nil, nil, nil, errors.New("the given container could not be retrieved")
@@ -250,7 +312,7 @@ func MakeContainer(ctx context.Context, rt *libpod.Runtime, s *specgen.SpecGener
 	}
 	return runtimeSpec, s, options, err
 }
-func ExecuteCreate(ctx context.Context, rt *libpod.Runtime, runtimeSpec *spec.Spec, s *specgen.SpecGenerator, infra bool, options ...libpod.CtrCreateOption) (*libpod.Container, error) {
+func ExecuteCreate(ctx context.Context, rt *libpod.Runtime, runtimeSpec *specs.Spec, s *specgen.SpecGenerator, infra bool, options ...libpod.CtrCreateOption) (*libpod.Container, error) {
 	ctr, err := rt.NewContainer(ctx, runtimeSpec, s, infra, options...)
 	if err != nil {
 		return ctr, err
@@ -263,7 +325,7 @@ func ExecuteCreate(ctx context.Context, rt *libpod.Runtime, runtimeSpec *spec.Sp
 // The CDI devices are added to the list of CtrCreateOptions.
 // Note that this may modify the device list associated with the spec, which should then only contain non-CDI devices.
 func ExtractCDIDevices(s *specgen.SpecGenerator) []libpod.CtrCreateOption {
-	devs := make([]spec.LinuxDevice, 0, len(s.Devices))
+	devs := make([]specs.LinuxDevice, 0, len(s.Devices))
 	var cdiDevs []string
 	var options []libpod.CtrCreateOption
 
@@ -285,7 +347,7 @@ func ExtractCDIDevices(s *specgen.SpecGenerator) []libpod.CtrCreateOption {
 
 // isCDIDevice checks whether the specified device is a CDI device.
 func isCDIDevice(device string) bool {
-	return cdi.IsQualifiedName(device)
+	return parser.IsQualifiedName(device)
 }
 
 func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *libpod.Pod, volumes []*specgen.NamedVolume, overlays []*specgen.OverlayVolume, imageData *libimage.ImageData, command []string, infraVolumes bool, compatibleOptions libpod.InfraInherit) ([]libpod.CtrCreateOption, error) {
@@ -296,7 +358,11 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 		options = append(options, libpod.WithPreserveFDs(s.PreserveFDs))
 	}
 
-	if s.Stdin {
+	if s.PreserveFD != nil {
+		options = append(options, libpod.WithPreserveFD(s.PreserveFD))
+	}
+
+	if s.Stdin != nil && *s.Stdin {
 		options = append(options, libpod.WithStdin())
 	}
 
@@ -306,14 +372,20 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 	if s.Umask != "" {
 		options = append(options, libpod.WithUmask(s.Umask))
 	}
-	if s.Volatile {
+	if s.Volatile != nil && *s.Volatile {
 		options = append(options, libpod.WithVolatile())
 	}
 	if s.PasswdEntry != "" {
 		options = append(options, libpod.WithPasswdEntry(s.PasswdEntry))
 	}
+	if s.GroupEntry != "" {
+		options = append(options, libpod.WithGroupEntry(s.GroupEntry))
+	}
+	if s.BaseHostsFile != "" {
+		options = append(options, libpod.WithBaseHostsFile(s.BaseHostsFile))
+	}
 
-	if s.Privileged {
+	if s.IsPrivileged() {
 		options = append(options, libpod.WithMountAllDevices())
 	}
 
@@ -452,7 +524,7 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 	if s.WorkDir == "" {
 		s.WorkDir = "/"
 	}
-	if s.CreateWorkingDir {
+	if s.CreateWorkingDir != nil && *s.CreateWorkingDir {
 		options = append(options, libpod.WithCreateWorkingDir())
 	}
 	if s.StopSignal != nil {
@@ -479,6 +551,9 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 			options = append(options, libpod.WithLogDriver(s.LogConfiguration.Driver))
 		}
 	}
+	if s.LabelNested != nil {
+		options = append(options, libpod.WithLabelNested(*s.LabelNested))
+	}
 	// Security options
 	if len(s.SelinuxOpts) > 0 {
 		options = append(options, libpod.WithSecLabels(s.SelinuxOpts))
@@ -496,7 +571,10 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 			options = append(options, libpod.WithSecLabels(selinuxOpts))
 		}
 	}
-	options = append(options, libpod.WithPrivileged(s.Privileged))
+	options = append(options, libpod.WithPrivileged(s.IsPrivileged()))
+	if s.ReadWriteTmpfs != nil {
+		options = append(options, libpod.WithReadWriteTmpfs(*s.ReadWriteTmpfs))
+	}
 
 	// Get namespace related options
 	namespaceOpts, err := namespaceOptions(s, rt, pod, imageData)
@@ -512,28 +590,54 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 	if s.ShmSize != nil {
 		options = append(options, libpod.WithShmSize(*s.ShmSize))
 	}
+	if s.ShmSizeSystemd != nil {
+		options = append(options, libpod.WithShmSizeSystemd(*s.ShmSizeSystemd))
+	}
 	if s.Rootfs != "" {
-		options = append(options, libpod.WithRootFS(s.Rootfs, s.RootfsOverlay))
+		rootfsOverlay := false
+		if s.RootfsOverlay != nil {
+			rootfsOverlay = *s.RootfsOverlay
+		}
+		options = append(options, libpod.WithRootFS(s.Rootfs, rootfsOverlay, s.RootfsMapping))
 	}
 	// Default used if not overridden on command line
 
-	if s.RestartPolicy != "" {
-		if s.RestartRetries != nil {
-			options = append(options, libpod.WithRestartRetries(*s.RestartRetries))
+	var (
+		restartPolicy string
+		retries       uint
+	)
+	// If the container is running in a pod, use the pod's restart policy for all the containers
+	if pod != nil && !s.IsInitContainer() && s.RestartPolicy == "" {
+		podConfig := pod.ConfigNoCopy()
+		if podConfig.RestartRetries != nil {
+			retries = *podConfig.RestartRetries
 		}
-		options = append(options, libpod.WithRestartPolicy(s.RestartPolicy))
+		restartPolicy = podConfig.RestartPolicy
+	} else if s.RestartPolicy != "" {
+		if s.RestartRetries != nil {
+			retries = *s.RestartRetries
+		}
+		restartPolicy = s.RestartPolicy
 	}
+	options = append(options, libpod.WithRestartRetries(retries), libpod.WithRestartPolicy(restartPolicy))
 
+	healthCheckSet := false
 	if s.ContainerHealthCheckConfig.HealthConfig != nil {
 		options = append(options, libpod.WithHealthCheck(s.ContainerHealthCheckConfig.HealthConfig))
 		logrus.Debugf("New container has a health check")
+		healthCheckSet = true
 	}
 	if s.ContainerHealthCheckConfig.StartupHealthConfig != nil {
 		options = append(options, libpod.WithStartupHealthcheck(s.ContainerHealthCheckConfig.StartupHealthConfig))
+		healthCheckSet = true
 	}
 
 	if s.ContainerHealthCheckConfig.HealthCheckOnFailureAction != define.HealthCheckOnFailureActionNone {
 		options = append(options, libpod.WithHealthCheckOnFailureAction(s.ContainerHealthCheckConfig.HealthCheckOnFailureAction))
+	}
+
+	if s.SdNotifyMode == define.SdNotifyModeHealthy && !healthCheckSet {
+		return nil, fmt.Errorf("%w: sdnotify policy %q requires a healthcheck to be set", define.ErrInvalidArg, s.SdNotifyMode)
 	}
 
 	if len(s.Secrets) != 0 {
@@ -586,7 +690,7 @@ func createContainerOptions(rt *libpod.Runtime, s *specgen.SpecGenerator, pod *l
 	return options, nil
 }
 
-func Inherit(infra libpod.Container, s *specgen.SpecGenerator, rt *libpod.Runtime) (opts []libpod.CtrCreateOption, infraS *spec.Spec, compat *libpod.InfraInherit, err error) {
+func Inherit(infra *libpod.Container, s *specgen.SpecGenerator, rt *libpod.Runtime) (opts []libpod.CtrCreateOption, infraS *specs.Spec, compat *libpod.InfraInherit, err error) {
 	inheritSpec := &specgen.SpecGenerator{}
 	_, compatibleOptions, err := ConfigToSpec(rt, inheritSpec, infra.ID())
 	if err != nil {

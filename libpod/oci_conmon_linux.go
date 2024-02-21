@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -13,9 +15,9 @@ import (
 
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/common/pkg/systemd"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/rootless"
 	pmount "github.com/containers/storage/pkg/mount"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/selinux/go-selinux/label"
@@ -146,7 +148,7 @@ func (r *ConmonOCIRuntime) moveConmonToCgroupAndSignal(ctr *Container, cmd *exec
 			}
 
 			logrus.Infof("Running conmon under slice %s and unitName %s", realCgroupParent, unitName)
-			if err := utils.RunUnderSystemdScope(cmd.Process.Pid, realCgroupParent, unitName); err != nil {
+			if err := systemd.RunUnderSystemdScope(cmd.Process.Pid, realCgroupParent, unitName); err != nil {
 				logrus.StandardLogger().Logf(logLevel, "Failed to add conmon to systemd sandbox cgroup: %v", err)
 			}
 		} else {
@@ -162,10 +164,7 @@ func (r *ConmonOCIRuntime) moveConmonToCgroupAndSignal(ctr *Container, cmd *exec
 	}
 
 	/* We set the cgroup, now the child can start creating children */
-	if err := writeConmonPipeData(startFd); err != nil {
-		return err
-	}
-	return nil
+	return writeConmonPipeData(startFd)
 }
 
 // GetLimits converts spec resource limits to cgroup consumable limits
@@ -267,49 +266,25 @@ func GetLimits(resource *spec.LinuxResources) (runcconfig.Resources, error) {
 	if resource.BlockIO != nil {
 		if len(resource.BlockIO.ThrottleReadBpsDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleReadBpsDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleReadBpsDevice = append(final.BlkioThrottleReadBpsDevice, throttle)
 			}
 		}
 		if len(resource.BlockIO.ThrottleWriteBpsDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleWriteBpsDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleWriteBpsDevice = append(final.BlkioThrottleWriteBpsDevice, throttle)
 			}
 		}
 		if len(resource.BlockIO.ThrottleReadIOPSDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleReadIOPSDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleReadIOPSDevice = append(final.BlkioThrottleReadIOPSDevice, throttle)
 			}
 		}
 		if len(resource.BlockIO.ThrottleWriteIOPSDevice) > 0 {
 			for _, entry := range resource.BlockIO.ThrottleWriteIOPSDevice {
-				throttle := &runcconfig.ThrottleDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
-				throttle.BlockIODevice = *dev
-				throttle.Rate = entry.Rate
+				throttle := runcconfig.NewThrottleDevice(entry.Major, entry.Minor, entry.Rate)
 				final.BlkioThrottleWriteIOPSDevice = append(final.BlkioThrottleWriteIOPSDevice, throttle)
 			}
 		}
@@ -321,18 +296,14 @@ func GetLimits(resource *spec.LinuxResources) (runcconfig.Resources, error) {
 		}
 		if len(resource.BlockIO.WeightDevice) > 0 {
 			for _, entry := range resource.BlockIO.WeightDevice {
-				weight := &runcconfig.WeightDevice{}
-				dev := &runcconfig.BlockIODevice{
-					Major: entry.Major,
-					Minor: entry.Minor,
-				}
+				var w, lw uint16
 				if entry.Weight != nil {
-					weight.Weight = *entry.Weight
+					w = *entry.Weight
 				}
 				if entry.LeafWeight != nil {
-					weight.LeafWeight = *entry.LeafWeight
+					lw = *entry.LeafWeight
 				}
-				weight.BlockIODevice = *dev
+				weight := runcconfig.NewWeightDevice(entry.Major, entry.Minor, w, lw)
 				final.BlkioWeightDevice = append(final.BlkioWeightDevice, weight)
 			}
 		}
@@ -352,6 +323,9 @@ func GetLimits(resource *spec.LinuxResources) (runcconfig.Resources, error) {
 
 	// Unified state
 	final.Unified = resource.Unified
-
 	return *final, nil
+}
+
+func moveToRuntimeCgroup() error {
+	return cgroups.MoveUnderCgroupSubtree("runtime")
 }

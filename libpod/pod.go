@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -8,8 +10,8 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/lock"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/lock"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -81,6 +83,12 @@ type PodConfig struct {
 	// The pod's exit policy.
 	ExitPolicy config.PodExitPolicy `json:"ExitPolicy,omitempty"`
 
+	// The pod's restart policy
+	RestartPolicy string `json:"RestartPolicy,omitempty"`
+
+	// The max number of retries for a pod based on restart policy
+	RestartRetries *uint `json:"RestartRetries,omitempty"`
+
 	// ID of the pod's lock
 	LockID uint32 `json:"lockID"`
 
@@ -105,6 +113,18 @@ func (p *Pod) ID() string {
 // Name retrieves the pod's name
 func (p *Pod) Name() string {
 	return p.config.Name
+}
+
+// MountLabel returns the SELinux label associated with the pod
+func (p *Pod) MountLabel() (string, error) {
+	if !p.HasInfraContainer() {
+		return "", nil
+	}
+	ctr, err := p.infraContainer()
+	if err != nil {
+		return "", err
+	}
+	return ctr.MountLabel(), nil
 }
 
 // Namespace returns the pod's libpod namespace.
@@ -257,8 +277,8 @@ func (p *Pod) VolumesFrom() []string {
 	if err != nil {
 		return nil
 	}
-	if ctrs, ok := infra.config.Spec.Annotations[define.InspectAnnotationVolumesFrom]; ok {
-		return strings.Split(ctrs, ",")
+	if ctrs, ok := infra.config.Spec.Annotations[define.VolumesFromAnnotation]; ok {
+		return strings.Split(ctrs, ";")
 	}
 	return nil
 }
@@ -342,9 +362,6 @@ func (p *Pod) CgroupPath() (string, error) {
 	defer p.lock.Unlock()
 	if err := p.updatePod(); err != nil {
 		return "", err
-	}
-	if p.state.InfraContainerID == "" {
-		return "", fmt.Errorf("pod has no infra container: %w", define.ErrNoSuchCtr)
 	}
 	return p.state.CgroupPath, nil
 }
@@ -509,4 +526,11 @@ func (p *Pod) Config() (*PodConfig, error) {
 	err := JSONDeepCopy(p.config, conf)
 
 	return conf, err
+}
+
+// ConfigNoCopy returns the configuration used by the pod.
+// Note that the returned value is not a copy and must hence
+// only be used in a reading fashion.
+func (p *Pod) ConfigNoCopy() *PodConfig {
+	return p.config
 }

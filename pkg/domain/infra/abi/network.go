@@ -6,12 +6,25 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/containers/common/libnetwork/pasta"
+	"github.com/containers/common/libnetwork/slirp4netns"
 	"github.com/containers/common/libnetwork/types"
 	netutil "github.com/containers/common/libnetwork/util"
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"golang.org/x/exp/slices"
 )
+
+func (ic *ContainerEngine) NetworkUpdate(ctx context.Context, netName string, options entities.NetworkUpdateOptions) error {
+	var networkUpdateOptions types.NetworkUpdateOptions
+	networkUpdateOptions.AddDNSServers = options.AddDNSServers
+	networkUpdateOptions.RemoveDNSServers = options.RemoveDNSServers
+	err := ic.Libpod.Network().NetworkUpdate(netName, networkUpdateOptions)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
 func (ic *ContainerEngine) NetworkList(ctx context.Context, options entities.NetworkListOptions) ([]types.Network, error) {
 	// dangling filter is not provided by netutil
@@ -110,7 +123,7 @@ func (ic *ContainerEngine) NetworkRm(ctx context.Context, namesOrIds []string, o
 			if err != nil {
 				return reports, err
 			}
-			if util.StringInSlice(name, networks) {
+			if slices.Contains(networks, name) {
 				// if user passes force, we nuke containers and pods
 				if !options.Force {
 					// Without the force option, we return an error
@@ -122,7 +135,7 @@ func (ic *ContainerEngine) NetworkRm(ctx context.Context, namesOrIds []string, o
 					if err != nil {
 						return reports, err
 					}
-					if err := ic.Libpod.RemovePod(ctx, pod, true, true, options.Timeout); err != nil {
+					if _, err := ic.Libpod.RemovePod(ctx, pod, true, true, options.Timeout); err != nil {
 						return reports, err
 					}
 				} else if err := ic.Libpod.RemoveContainer(ctx, c, true, true, options.Timeout); err != nil && !errors.Is(err, define.ErrNoSuchCtr) {
@@ -139,8 +152,7 @@ func (ic *ContainerEngine) NetworkRm(ctx context.Context, namesOrIds []string, o
 }
 
 func (ic *ContainerEngine) NetworkCreate(ctx context.Context, network types.Network, createOptions *types.NetworkCreateOptions) (*types.Network, error) {
-	// TODO (5.0): Stop accepting "pasta" as value here
-	if util.StringInSlice(network.Name, []string{"none", "host", "bridge", "private", "slirp4netns", "container", "ns"}) {
+	if slices.Contains([]string{"none", "host", "bridge", "private", slirp4netns.BinaryName, pasta.BinaryName, "container", "ns", "default"}, network.Name) {
 		return nil, fmt.Errorf("cannot create network with name %q because it conflicts with a valid network mode", network.Name)
 	}
 	network, err := ic.Libpod.Network().NetworkCreate(network, createOptions)

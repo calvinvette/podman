@@ -4,29 +4,37 @@
 #
 
 load helpers
+load helpers.network
+load helpers.registry
 load helpers.systemd
 
-SNAME_FILE=$BATS_TMPDIR/services
+export SNAME_FILE
 
 function setup() {
     skip_if_remote "systemd tests are meaningless over remote"
     basic_setup
+
+    SNAME_FILE=${PODMAN_TMPDIR}/services
 }
 
 function teardown() {
-    while read line; do
-        if [[ "$line" =~ "podman-auto-update" ]]; then
-            echo "Stop timer: $line.timer"
-            systemctl stop $line.timer
-            systemctl disable $line.timer
-        else
-            systemctl stop $line
-        fi
-        rm -f $UNIT_DIR/$line.{service,timer}
-    done < $SNAME_FILE
+    if [[ -e $SNAME_FILE ]]; then
+        while read line; do
+            if [[ "$line" =~ "podman-auto-update" ]]; then
+                echo "Stop timer: $line.timer"
+                systemctl stop $line.timer
+                systemctl disable $line.timer
+            else
+                systemctl stop $line
+            fi
+            rm -f $UNIT_DIR/$line.{service,timer}
+        done < $SNAME_FILE
 
-    rm -f $SNAME_FILE
-    run_podman '?' rmi -f                            \
+        rm -f $SNAME_FILE
+    fi
+    SNAME_FILE=
+
+    run_podman rmi -f                              \
             quay.io/libpod/alpine:latest           \
             quay.io/libpod/busybox:latest          \
             quay.io/libpod/localtest:latest        \
@@ -35,7 +43,7 @@ function teardown() {
 
     # The rollback tests may leave some dangling images behind, so let's prune
     # them to leave a clean state.
-    run_podman '?' image prune -f
+    run_podman image prune -f
     basic_teardown
 }
 
@@ -47,12 +55,14 @@ function teardown() {
 #   4. Generate the service file from the container
 #   5. Remove the origin container
 #   6. Start the container from service
+#   7. Use this fully-qualified image instead of 2)
 function generate_service() {
     local target_img_basename=$1
     local autoupdate=$2
     local command=$3
     local extraArgs=$4
     local noTag=$5
+    local requires=$6
 
     # Unless specified, set a default command.
     if [[ -z "$command" ]]; then
@@ -63,6 +73,9 @@ function generate_service() {
     # IMPORTANT: variable 'cname' is passed (out of scope) up to caller!
     cname=c_${autoupdate//\'/}_$(random_string)
     target_img="quay.io/libpod/$target_img_basename:latest"
+    if [[ -n "$7" ]]; then
+        target_img="$7"
+    fi
 
     if [[ -z "$noTag" ]]; then
         run_podman tag $IMAGE $target_img
@@ -73,14 +86,19 @@ function generate_service() {
     else
         label=""
     fi
+
+    if [[ -n "$requires" ]]; then
+        requires="--requires=$requires"
+    fi
+
     run_podman create $extraArgs --name $cname $label $target_img $command
 
-    (cd $UNIT_DIR; run_podman generate systemd --new --files --name $cname)
+    (cd $UNIT_DIR; run_podman generate systemd --new --files --name $requires $cname)
     echo "container-$cname" >> $SNAME_FILE
     run_podman rm -t 0 -f $cname
 
     systemctl daemon-reload
-    systemctl start container-$cname
+    systemctl_start container-$cname
     systemctl status container-$cname
 
     # Original image ID.
@@ -112,7 +130,7 @@ function _confirm_update() {
     local old_iid=$2
 
     # Image has already been pulled, so this shouldn't take too long
-    local timeout=5
+    local timeout=10
     while [[ $timeout -gt 0 ]]; do
         sleep 1
         run_podman '?' inspect --format "{{.Image}}" $cname
@@ -161,23 +179,41 @@ function _confirm_update() {
     run_podman events --filter type=system --since $since --stream=false
     is "$output" ""
 
+    # Generate two units.  The first "parent" to be auto updated, the second
+    # "child" depends on/requires the "parent" and is expected to get restarted
+    # as well on auto updates (regression test for #18926).
     generate_service alpine image
+    ctr_parent=$cname
+    _wait_service_ready container-$ctr_parent.service
 
-    _wait_service_ready container-$cname.service
+    generate_service alpine image "" "" "" "container-$ctr_parent.service"
+    ctr_child=$cname
+    _wait_service_ready container-$ctr_child.service
+    run_podman container inspect --format "{{.ID}}" $ctr_child
+    old_child_id=$output
+
     since=$(date --iso-8601=seconds)
     run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
-    is "$output" ".*container-$cname.service,quay.io/libpod/alpine:latest,pending,registry.*" "Image update is pending."
+    is "$output" ".*container-$ctr_parent.service,quay.io/libpod/alpine:latest,pending,registry.*" "Image update is pending."
     run_podman events --filter type=system --since $since --stream=false
     is "$output" ".* system auto-update"
 
     since=$(date --iso-8601=seconds)
-    run_podman auto-update --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    run_podman auto-update --rollback=false --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
     is "$output" "Trying to pull.*" "Image is updated."
-    is "$output" ".*container-$cname.service,quay.io/libpod/alpine:latest,true,registry.*" "Image is updated."
+    is "$output" ".*container-$ctr_parent.service,quay.io/libpod/alpine:latest,true,registry.*" "Image is updated."
     run_podman events --filter type=system --since $since --stream=false
     is "$output" ".* system auto-update"
 
-    _confirm_update $cname $ori_image
+    # Confirm that the update was successful and that the child container/unit
+    # has been restarted as well.
+    _confirm_update $ctr_parent $ori_image
+    run_podman container inspect --format "{{.ID}}" $ctr_child
+    assert "$output" != "$old_child_id" \
+        "child container/unit has not been restarted during update"
+    run_podman container inspect --format "{{.ID}}" $ctr_child
+    run_podman container inspect --format "{{.State.Status}}" $ctr_child
+    is "$output" "running" "child container is in running state"
 }
 
 @test "podman auto-update - label io.containers.autoupdate=image with rollback" {
@@ -239,15 +275,16 @@ function _confirm_update() {
 
 @test "podman auto-update - label io.containers.autoupdate=local" {
     generate_service localtest local
+    _wait_service_ready container-$cname.service
+
     image=quay.io/libpod/localtest:latest
     run_podman commit --change CMD=/bin/bash $cname $image
     run_podman image inspect --format "{{.ID}}" $image
 
-    _wait_service_ready container-$cname.service
     run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
     is "$output" ".*container-$cname.service,quay.io/libpod/localtest:latest,pending,local.*" "Image update is pending."
 
-    run_podman auto-update --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    run_podman auto-update --rollback=false --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
     is "$output" ".*container-$cname.service,quay.io/libpod/localtest:latest,true,local.*" "Image is updated."
 
     _confirm_update $cname $ori_image
@@ -263,6 +300,8 @@ function _confirm_update() {
     if [[ "$runtime" != "crun" ]]; then
         skip "this test only works with crun, not $runtime"
     fi
+
+    _prefetch $SYSTEMD_IMAGE
 
     dockerfile1=$PODMAN_TMPDIR/Dockerfile.1
     cat >$dockerfile1 <<EOF
@@ -337,11 +376,13 @@ EOF
         fi
     done
 
-    # Only check that the last service is started. Previous services should already be activated.
-    _wait_service_ready container-$cname.service
+    # Make sure all services are ready.
+    for cname in "${cnames[@]}"; do
+        _wait_service_ready container-$cname.service
+    done
     run_podman commit --change CMD=/bin/bash $local_cname quay.io/libpod/localtest:latest
     # Exit code is expected, due to invalid 'fakevalue'
-    run_podman 125 auto-update
+    run_podman 125 auto-update --rollback=false
     update_log=$output
     is "$update_log" ".*invalid auto-update policy.*" "invalid policy setup"
     is "$update_log" ".*Error: invalid auto-update policy.*" "invalid policy setup"
@@ -441,6 +482,7 @@ EOF
         skip "this test only works with crun, not $runtime"
     fi
 
+    _prefetch $SYSTEMD_IMAGE
     install_kube_template
 
     dockerfile1=$PODMAN_TMPDIR/Dockerfile.1
@@ -494,7 +536,7 @@ EOF
 
     # Dispatch the YAML file
     service_name="podman-kube@$(systemd-escape $yaml_source).service"
-    systemctl start $service_name
+    systemctl_start $service_name
     systemctl is-active $service_name
 
     # Make sure the containers are properly configured
@@ -523,6 +565,133 @@ EOF
     systemctl stop $service_name
     run_podman rmi -f $(pause_image) $local_image $newID $oldID
     rm -f $UNIT_DIR/$unit_name
+}
+
+@test "podman auto-update - pod" {
+    dockerfile=$PODMAN_TMPDIR/Dockerfile
+    cat >$dockerfile <<EOF
+FROM $IMAGE
+RUN touch /123
+EOF
+
+    podname=$(random_string)
+    ctrname=$(random_string)
+    podunit="$UNIT_DIR/pod-$podname.service.*"
+    ctrunit="$UNIT_DIR/container-$ctrname.service.*"
+    local_image=localhost/image:$(random_string 10)
+
+    run_podman tag $IMAGE $local_image
+
+    run_podman pod create --name=$podname
+    run_podman create --label "io.containers.autoupdate=local" --pod=$podname --name=$ctrname $local_image top
+
+    # cd into the unit dir to generate the two files.
+    pushd "$UNIT_DIR"
+    run_podman generate systemd --name --new --files $podname
+    is "$output" ".*$podunit.*"
+    is "$output" ".*$ctrunit.*"
+    popd
+
+    systemctl daemon-reload
+
+    systemctl_start pod-$podname.service
+    _wait_service_ready container-$ctrname.service
+
+    run_podman pod inspect --format "{{.State}}" $podname
+    is "$output" "Running" "pod is in running state"
+    run_podman container inspect --format "{{.State.Status}}" $ctrname
+    is "$output" "running" "container is in running state"
+
+    run_podman pod inspect --format "{{.ID}}" $podname
+    podid="$output"
+    run_podman container inspect --format "{{.ID}}" $ctrname
+    ctrid="$output"
+
+    # Note that the pod's unit is listed below, not the one of the container.
+    run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" ".*pod-$podname.service,$local_image,false,local.*" "No update available"
+
+    run_podman build -t $local_image -f $dockerfile
+
+    run_podman auto-update --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" ".*pod-$podname.service,$local_image,pending,local.*" "Image updated is pending"
+
+    run_podman auto-update --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" ".*pod-$podname.service,$local_image,true,local.*" "Service has been restarted"
+    _wait_service_ready container-$ctrname.service
+
+    run_podman pod inspect --format "{{.ID}}" $podname
+    assert "$output" != "$podid" "pod has been recreated"
+    run_podman container inspect --format "{{.ID}}" $ctrname
+    assert "$output" != "$ctrid" "container has been recreated"
+
+    run systemctl stop pod-$podname.service
+    assert $status -eq 0 "Error stopping pod systemd unit: $output"
+
+    run_podman pod rm -f $podname
+    run_podman rmi $local_image $(pause_image)
+    rm -f $podunit $ctrunit
+    systemctl daemon-reload
+}
+
+@test "podman-auto-update --authfile"  {
+    # Test the three supported ways of using authfiles with auto updates
+    # 1) Passed via --authfile CLI flag
+    # 2) Passed via the REGISTRY_AUTH_FILE env variable
+    # 3) Via a label at container creation where 1) and 2) will be ignored
+
+    registry=localhost:${PODMAN_LOGIN_REGISTRY_PORT}
+    image_on_local_registry=$registry/name:tag
+    authfile=$PODMAN_TMPDIR/authfile.json
+
+    # First, start the registry and populate the authfile that we can use for the test.
+    start_registry
+    run_podman login --authfile=$authfile \
+        --tls-verify=false \
+        --username ${PODMAN_LOGIN_USER} \
+        --password ${PODMAN_LOGIN_PASS} \
+        $registry
+
+    # Push the image to the registry and pull it down again to make sure we
+    # have the identical digest in the local storage
+    run_podman push --tls-verify=false --creds "${PODMAN_LOGIN_USER}:${PODMAN_LOGIN_PASS}" $IMAGE $image_on_local_registry
+    run_podman pull --tls-verify=false --creds "${PODMAN_LOGIN_USER}:${PODMAN_LOGIN_PASS}" $image_on_local_registry
+
+    # Generate a systemd service with the "registry" auto-update policy running
+    # "top" inside the image we just pushed to the local registry.
+    generate_service "" registry top "" "" "" $image_on_local_registry
+    ctr=$cname
+    _wait_service_ready container-$ctr.service
+
+    run_podman 125 auto-update
+    is "$output" \
+       ".*Error: checking image updates for container .*: x509: .*"
+
+    run_podman 125 auto-update --tls-verify=false
+    is "$output" \
+       ".*Error: checking image updates for container .*: authentication required"
+
+    # Test 1)
+    run_podman auto-update --authfile=$authfile --tls-verify=false --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" "container-$ctr.service,$image_on_local_registry,false,registry" "auto-update works with authfile"
+
+    # Test 2)
+    REGISTRY_AUTH_FILE=$authfile run_podman auto-update --tls-verify=false --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" "container-$ctr.service,$image_on_local_registry,false,registry" "auto-update works with env var"
+    systemctl stop container-$ctr.service
+    run_podman rm -f -t0 --ignore $ctr
+
+    # Create a container with the auth-file label
+    generate_service "" registry top "--label io.containers.autoupdate.authfile=$authfile" "" "" $image_on_local_registry
+    ctr=$cname
+    _wait_service_ready container-$ctr.service
+
+    # Test 3)
+    # Also make sure that the label takes precedence over the CLI flag.
+    run_podman auto-update --authfile=/dev/null --tls-verify=false --dry-run --format "{{.Unit}},{{.Image}},{{.Updated}},{{.Policy}}"
+    is "$output" "container-$ctr.service,$image_on_local_registry,false,registry" "auto-update works with authfile container label"
+    run_podman rm -f -t0 --ignore $ctr
+    run_podman rmi $image_on_local_registry
 }
 
 # vim: filetype=sh

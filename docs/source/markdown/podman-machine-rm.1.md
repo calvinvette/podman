@@ -10,11 +10,14 @@ podman\-machine\-rm - Remove a virtual machine
 
 Remove a virtual machine and its related files.  What is actually deleted
 depends on the virtual machine type.  For all virtual machines, the generated
-SSH keys and the podman system connection are deleted.  The ignition files
+podman system connections are deleted.  The ignition files
 generated for that VM are also removed as is its image file on the filesystem.
 
-Users get a display of what will be deleted and are required to confirm unless the option `--force`
+Users get a display of what is deleted and are required to confirm unless the option `--force`
 is used.
+
+The default machine name is `podman-machine-default`. If a machine name is not specified as an argument,
+then `podman-machine-default` will be removed.
 
 Rootless only.
 
@@ -36,22 +39,14 @@ Do not delete the generated ignition file.
 
 Do not delete the VM image.
 
-#### **--save-keys**
-
-Do not delete the SSH keys for the VM.  The system connection is always
-deleted.
-
 ## EXAMPLES
 
-Remove a VM named "test1":
-
+Remove the specified Podman machine.
 ```
 $ podman machine rm test1
 
 The following files will be deleted:
 
-/home/user/.ssh/test1
-/home/user/.ssh/test1.pub
 /home/user/.config/containers/podman/machine/qemu/test1.ign
 /home/user/.local/share/containers/podman/machine/qemu/test1_fedora-coreos-33.20210315.1.0-qemu.x86_64.qcow2
 /home/user/.config/containers/podman/machine/qemu/test1.json
@@ -59,6 +54,7 @@ The following files will be deleted:
 Are you sure you want to continue? [y/N] y
 ```
 
+Remove the specified Podman machine even if it is running.
 ```
 $ podman machine rm -f test1
 $

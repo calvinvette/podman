@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package main
 
@@ -11,15 +10,18 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/containers/podman/v4/pkg/machine/wsl"
+	"github.com/containers/podman/v5/pkg/machine/wsl/wutil"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows/svc/eventlog"
 )
 
 const (
+	//nolint:stylecheck
 	MB_ICONWARNING = 0x00000030
-	MB_OK          = 0x00000000
-	MB_DEFBUTTON1  = 0x00000000
+	//nolint:stylecheck
+	MB_OK = 0x00000000
+	//nolint:stylecheck
+	MB_DEFBUTTON1 = 0x00000000
 )
 
 const KernelWarning = "WSL Kernel installation did not complete successfully. " +
@@ -29,7 +31,7 @@ const KernelWarning = "WSL Kernel installation did not complete successfully. " 
 
 func setupLogging(name string) (*eventlog.Log, error) {
 	// Reuse the Built-in .NET Runtime Source so that we do not
-	// have to provide a messaage table and modify the system
+	// have to provide a message table and modify the system
 	// event configuration
 	log, err := eventlog.Open(".NET Runtime")
 	if err != nil {
@@ -49,7 +51,7 @@ func installWslKernel() error {
 	)
 	backoff := 500 * time.Millisecond
 	for i := 1; i < 6; i++ {
-		err = wsl.SilentExec("wsl", "--update")
+		err = wutil.SilentExec(wutil.FindWSL(), "--update")
 		if err == nil {
 			break
 		}
@@ -86,8 +88,8 @@ func warn(title string, caption string) int {
 
 func main() {
 	args := os.Args
-	setupLogging(path.Base(args[0]))
-	if wsl.IsWSLInstalled() {
+	_, _ = setupLogging(path.Base(args[0]))
+	if wutil.IsWSLInstalled() {
 		// nothing to do
 		logrus.Info("WSL Kernel already installed")
 		return

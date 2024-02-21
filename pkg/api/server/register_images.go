@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
-	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -229,7 +229,7 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//  - in: query
 	//    name: noprune
 	//    type: boolean
-	//    description: not supported. will be logged as an invalid parameter if enabled
+	//    description: do not remove dangling parent images
 	// produces:
 	//  - application/json
 	// responses:
@@ -726,6 +726,11 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    type: string
 	//    description: Allows for pushing the image to a different destination than the image refers to.
 	//  - in: query
+	//    name: forceCompressionFormat
+	//    description: Enforce compressing the layers with the specified --compression and do not reuse differently compressed blobs on the registry.
+	//    type: boolean
+	//    default: false
+	//  - in: query
 	//    name: tlsVerify
 	//    description: Require TLS verification.
 	//    type: boolean
@@ -1014,9 +1019,10 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//     type: boolean
 	//     default: false
 	//   - in: query
-	//     name: credentials
-	//     description: "username:password for the registry"
-	//     type: string
+	//     name: compatMode
+	//     description: "Return the same JSON payload as the Docker-compat endpoint."
+	//     type: boolean
+	//     default: false
 	//   - in: query
 	//     name: Arch
 	//     description: Pull image for the specified architecture.
@@ -1275,25 +1281,9 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    description: the name or ID of a container
 	//    required: true
 	//  - in: query
-	//    name: repo
-	//    type: string
-	//    description: the repository name for the created image
-	//  - in: query
-	//    name: tag
-	//    type: string
-	//    description: tag name for the created image
-	//  - in: query
-	//    name: comment
-	//    type: string
-	//    description: commit message
-	//  - in: query
 	//    name: author
 	//    type: string
 	//    description: author of the image
-	//  - in: query
-	//    name: pause
-	//    type: boolean
-	//    description: pause the container before committing it
 	//  - in: query
 	//    name: changes
 	//    description: instructions to apply while committing in Dockerfile format (i.e. "CMD=/bin/foo")
@@ -1301,9 +1291,33 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//    items:
 	//       type: string
 	//  - in: query
+	//    name: comment
+	//    type: string
+	//    description: commit message
+	//  - in: query
 	//    name: format
 	//    type: string
 	//    description: format of the image manifest and metadata (default "oci")
+	//  - in: query
+	//    name: pause
+	//    type: boolean
+	//    description: pause the container before committing it
+	//  - in: query
+	//    name: squash
+	//    type: boolean
+	//    description: squash the container before committing it
+	//  - in: query
+	//    name: repo
+	//    type: string
+	//    description: the repository name for the created image
+	//  - in: query
+	//    name: stream
+	//    type: boolean
+	//    description: output from commit process
+	//  - in: query
+	//    name: tag
+	//    type: string
+	//    description: tag name for the created image
 	// produces:
 	// - application/json
 	// responses:
@@ -1355,7 +1369,7 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//   - images
 	// summary: Report on changes to images's filesystem; adds, deletes or modifications.
 	// description: |
-	//   Returns which files in a images's filesystem have been added, deleted, or modified. The Kind of modification can be one of:
+	//   Returns which files in an image's filesystem have been added, deleted, or modified. The Kind of modification can be one of:
 	//
 	//   0: Modified
 	//   1: Added
@@ -1551,6 +1565,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//      JSON map of key, value pairs to set as labels on the new image
 	//      (As of version 1.xx)
 	//  - in: query
+	//    name: layerLabel
+	//    description: Add an intermediate image *label* (e.g. label=*value*) to the intermediate image metadata.
+	//    type: array
+	//    items:
+	//      type: string
+	//  - in: query
 	//    name: layers
 	//    type: boolean
 	//    default: true
@@ -1601,6 +1621,12 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//  - in: query
 	//    name: unsetenv
 	//    description: Unset environment variables from the final image.
+	//    type: array
+	//    items:
+	//      type: string
+	//  - in: query
+	//    name: unsetlabel
+	//    description: Unset the image label, causing the label not to be inherited from the base image.
 	//    type: array
 	//    items:
 	//      type: string
@@ -1664,5 +1690,27 @@ func (s *APIServer) registerImagesHandlers(r *mux.Router) error {
 	//   500:
 	//     $ref: '#/responses/internalError'
 	r.Handle(VersionedPath("/libpod/images/scp/{name:.*}"), s.APIHandler(libpod.ImageScp)).Methods(http.MethodPost)
+	// swagger:operation GET /libpod/images/{name}/resolve libpod ImageResolveLibpod
+	// ---
+	// tags:
+	//  - images
+	// summary: Resolve an image (short) name
+	// description: Resolve the passed image name to a list of fully-qualified images referring to container registries.
+	// parameters:
+	//  - in: path
+	//    name: name
+	//    type: string
+	//    required: true
+	//    description: the (short) name to resolve
+	// produces:
+	// - application/json
+	// responses:
+	//   204:
+	//     description: resolved image names
+	//   400:
+	//     $ref: "#/responses/badParamError"
+	//   500:
+	//     $ref: '#/responses/internalError'
+	r.Handle(VersionedPath("/libpod/images/{name:.*}/resolve"), s.APIHandler(libpod.ImageResolve)).Methods(http.MethodGet)
 	return nil
 }

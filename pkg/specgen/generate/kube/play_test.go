@@ -1,5 +1,4 @@
-//go:build linux
-// +build linux
+//go:build linux && !remote
 
 package kube
 
@@ -10,14 +9,14 @@ import (
 	"testing"
 
 	"github.com/containers/common/pkg/secrets"
-	v1 "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
-	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/api/resource"
-	v12 "github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
-	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/util/intstr"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/docker/docker/pkg/system"
-	"github.com/ghodss/yaml"
+	v1 "github.com/containers/podman/v5/pkg/k8s.io/api/core/v1"
+	"github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/api/resource"
+	v12 "github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/apis/meta/v1"
+	"github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/util/intstr"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/docker/docker/pkg/meminfo"
 	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/yaml"
 )
 
 func createSecrets(t *testing.T, d string) *secrets.SecretsManager {
@@ -448,7 +447,7 @@ func TestEnvVarValue(t *testing.T) {
 	secretsManager := createSecrets(t, d)
 	stringNumCPUs := strconv.Itoa(runtime.NumCPU())
 
-	mi, err := system.ReadMemInfo()
+	mi, err := meminfo.Read()
 	assert.Nil(t, err)
 	stringMemTotal := strconv.FormatInt(mi.MemTotal, 10)
 
@@ -1247,6 +1246,131 @@ func TestHttpLivenessProbe(t *testing.T) {
 			true,
 			"http://localhost:80/",
 		},
+		{
+			"HttpLivenessProbeNamedPort",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						HTTPGet: &v1.HTTPGetAction{
+							Port: intstr.FromString("httpPort"),
+						},
+					},
+				},
+				Ports: []v1.ContainerPort{
+					{Name: "servicePort", ContainerPort: 7000},
+					{Name: "httpPort", ContainerPort: 8000},
+				},
+			},
+			"always",
+			true,
+			"http://localhost:8000/",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			err := setupLivenessProbe(&test.specGenerator, test.container, test.restartPolicy)
+			if err == nil {
+				assert.Equal(t, err == nil, test.succeed)
+				assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedURL)
+			}
+		})
+	}
+}
+
+func TestTCPLivenessProbe(t *testing.T) {
+	tests := []struct {
+		name          string
+		specGenerator specgen.SpecGenerator
+		container     v1.Container
+		restartPolicy string
+		succeed       bool
+		expectedHost  string
+		expectedPort  string
+	}{
+		{
+			"TCPLivenessProbeNormal",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Host: "127.0.0.1",
+							Port: intstr.FromInt(8080),
+						},
+					},
+				},
+			},
+			"always",
+			true,
+			"127.0.0.1",
+			"8080",
+		},
+		{
+			"TCPLivenessProbeHostUsesDefault",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Port: intstr.FromInt(200),
+						},
+					},
+				},
+			},
+			"always",
+			true,
+			"localhost",
+			"200",
+		},
+		{
+			"TCPLivenessProbeUseNamedPort",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Port: intstr.FromString("servicePort"),
+							Host: "myservice.domain.com",
+						},
+					},
+				},
+				Ports: []v1.ContainerPort{
+					{ContainerPort: 6000},
+					{Name: "servicePort", ContainerPort: 4000},
+					{Name: "2ndServicePort", ContainerPort: 3000},
+				},
+			},
+			"always",
+			true,
+			"myservice.domain.com",
+			"4000",
+		},
+		{
+			"TCPLivenessProbeInvalidPortName",
+			specgen.SpecGenerator{},
+			v1.Container{
+				LivenessProbe: &v1.Probe{
+					Handler: v1.Handler{
+						TCPSocket: &v1.TCPSocketAction{
+							Port: intstr.FromString("3rdservicePort"),
+							Host: "myservice.domain.com",
+						},
+					},
+				},
+				Ports: []v1.ContainerPort{
+					{ContainerPort: 6000},
+					{Name: "servicePort", ContainerPort: 4000},
+					{Name: "2ndServicePort", ContainerPort: 3000},
+				},
+			},
+			"always",
+			false,
+			"myservice.domain.com",
+			"4000",
+		},
 	}
 
 	for _, test := range tests {
@@ -1254,7 +1378,10 @@ func TestHttpLivenessProbe(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			err := setupLivenessProbe(&test.specGenerator, test.container, test.restartPolicy)
 			assert.Equal(t, err == nil, test.succeed)
-			assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedURL)
+			if err == nil {
+				assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedHost)
+				assert.Contains(t, test.specGenerator.ContainerHealthCheckConfig.HealthConfig.Test, test.expectedPort)
+			}
 		})
 	}
 }

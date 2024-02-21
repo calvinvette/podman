@@ -3,11 +3,12 @@ package containers
 import (
 	"errors"
 	"os"
+	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -75,7 +76,7 @@ func attach(cmd *cobra.Command, args []string) error {
 
 	var name string
 	if len(args) > 0 {
-		name = args[0]
+		name = strings.TrimPrefix(args[0], "/")
 	}
 	attachOpts.Stdin = os.Stdin
 	if attachOpts.NoStdin {

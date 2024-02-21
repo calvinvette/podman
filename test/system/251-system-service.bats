@@ -15,13 +15,27 @@ function teardown() {
     basic_teardown
 }
 
-@test "podman systerm service <bad_scheme_uri> returns error" {
+@test "podman system service <bad_scheme_uri> returns error" {
     skip_if_remote "podman system service unavailable over remote"
     run_podman 125 system service localhost:9292
-    is "$output" "Error: API Service endpoint scheme \"localhost\" is not supported. Try tcp://localhost:9292 or unix:/localhost:9292"
+    is "$output" "Error: API Service endpoint scheme \"localhost\" is not supported. Try tcp://localhost:9292 or unix://localhost:9292"
 
     run_podman 125 system service myunix.sock
-    is "$output" "Error: API Service endpoint scheme \"\" is not supported. Try tcp://myunix.sock or unix:/myunix.sock"
+    is "$output" "Error: API Service endpoint scheme \"\" is not supported. Try tcp://myunix.sock or unix://myunix.sock"
+}
+
+@test "podman system service unix: without two slashes still works" {
+    skip_if_remote "podman system service unavailable over remote"
+    URL=unix:$PODMAN_TMPDIR/myunix.sock
+
+    systemd-run --unit=$SERVICE_NAME $PODMAN system service $URL --time=0
+    wait_for_file $PODMAN_TMPDIR/myunix.sock
+
+    run_podman --host $URL info --format '{{.Host.RemoteSocket.Path}}'
+    is "$output" "$URL" "RemoteSocket.Path using unix:"
+
+    systemctl stop $SERVICE_NAME
+    rm -f $PODMAN_TMPDIR/myunix.sock
 }
 
 @test "podman-system-service containers survive service stop" {
@@ -67,5 +81,24 @@ function teardown() {
         is "$output" "$URL" "RemoteSocket.Path using $opt"
     done
 
+    systemctl stop $SERVICE_NAME
+}
+
+# Regression test for https://github.com/containers/podman/issues/17749
+@test "podman-system-service --log-level=trace should be able to hijack" {
+    skip_if_remote "podman system service unavailable over remote"
+
+    port=$(random_free_port)
+    URL=tcp://127.0.0.1:$port
+
+    systemd-run --unit=$SERVICE_NAME $PODMAN --log-level=trace system service $URL --time=0
+    wait_for_port 127.0.0.1 $port
+
+    out=o-$(random_string)
+    cname=c-$(random_string)
+    run_podman --url $URL run --name $cname $IMAGE echo $out
+    assert "$output" == "$out" "service is able to hijack and stream output back"
+
+    run_podman --url $URL rm $cname
     systemctl stop $SERVICE_NAME
 }

@@ -69,7 +69,7 @@ func (t ContainerStatus) String() string {
 	return "bad state"
 }
 
-// StringToContainerStatus converts a string representation of a containers
+// StringToContainerStatus converts a string representation of a container's
 // status into an actual container status type
 func StringToContainerStatus(status string) (ContainerStatus, error) {
 	switch status {
@@ -141,11 +141,23 @@ type ContainerStats struct {
 	MemUsage      uint64
 	MemLimit      uint64
 	MemPerc       float64
-	NetInput      uint64
-	NetOutput     uint64
-	BlockInput    uint64
-	BlockOutput   uint64
-	PIDs          uint64
-	UpTime        time.Duration
-	Duration      uint64
+	// Map of interface name to network statistics for that interface.
+	Network     map[string]ContainerNetworkStats
+	BlockInput  uint64
+	BlockOutput uint64
+	PIDs        uint64
+	UpTime      time.Duration
+	Duration    uint64
+}
+
+// Statistics for an individual container network interface
+type ContainerNetworkStats struct {
+	RxBytes   uint64
+	RxDropped uint64
+	RxErrors  uint64
+	RxPackets uint64
+	TxBytes   uint64
+	TxDropped uint64
+	TxErrors  uint64
+	TxPackets uint64
 }

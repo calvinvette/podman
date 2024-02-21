@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
-	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -79,6 +79,11 @@ func (s *APIServer) registerSecretHandlers(r *mux.Router) error {
 	//    type: string
 	//    required: true
 	//    description: the name or ID of the secret
+	//  - in: query
+	//    name: showsecret
+	//    type: boolean
+	//    description: Display Secret
+	//    default: false
 	// produces:
 	// - application/json
 	// responses:
@@ -89,6 +94,27 @@ func (s *APIServer) registerSecretHandlers(r *mux.Router) error {
 	//   '500':
 	//     "$ref": "#/responses/internalError"
 	r.Handle(VersionedPath("/libpod/secrets/{name}/json"), s.APIHandler(compat.InspectSecret)).Methods(http.MethodGet)
+	// swagger:operation GET /libpod/secrets/{name}/exists libpod SecretExistsLibpod
+	// ---
+	// tags:
+	//  - secrets
+	// summary: Secret exists
+	// parameters:
+	//  - in: path
+	//    name: name
+	//    type: string
+	//    required: true
+	//    description: the name or ID of the secret
+	// produces:
+	// - application/json
+	// responses:
+	//   204:
+	//     description: secret exists
+	//   404:
+	//     $ref: '#/responses/NoSuchSecret'
+	//   '500':
+	//     "$ref": "#/responses/internalError"
+	r.Handle(VersionedPath("/libpod/secrets/{name}/exists"), s.APIHandler(libpod.SecretExists)).Methods(http.MethodGet)
 	// swagger:operation DELETE /libpod/secrets/{name} libpod SecretDeleteLibpod
 	// ---
 	// tags:

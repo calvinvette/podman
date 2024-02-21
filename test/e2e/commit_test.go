@@ -5,46 +5,50 @@ import (
 	"path/filepath"
 	"strings"
 
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman commit", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
-
-	BeforeEach(func() {
-		tempdir, err = CreateTempDirInTempDir()
-		Expect(err).ToNot(HaveOccurred())
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
-	})
 
 	It("podman commit container", func() {
 		_, ec, _ := podmanTest.RunLsContainer("test1")
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "test1", "--change", "BOGUS=foo", "foobar.com/test1-image:latest"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(125))
+		Expect(session.ErrorToString()).To(HaveSuffix(`applying changes: processing change "BOGUS foo": did not understand change instruction "BOGUS foo"`))
+
+		session = podmanTest.Podman([]string{"commit", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
 		Expect(session).Should(Exit(0))
+
+		messages := session.ErrorToString()
+		Expect(messages).To(ContainSubstring("Getting image source signatures"))
+		Expect(messages).To(ContainSubstring("Copying blob"))
+		Expect(messages).To(ContainSubstring("Writing manifest to image destination"))
+		Expect(messages).To(Not(ContainSubstring("level=")), "Unexpected logrus messages in stderr")
 
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
 		data := check.InspectImageJSON()
 		Expect(data[0].RepoTags).To(ContainElement("foobar.com/test1-image:latest"))
+
+		// commit second time with --quiet, should not write to stderr
+		session = podmanTest.Podman([]string{"commit", "--quiet", "test1", "foobar.com/test1-image:latest"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		Expect(session.ErrorToString()).To(BeEmpty())
+
+		// commit second time with --quiet, should not write to stderr
+		session = podmanTest.Podman([]string{"commit", "--quiet", "bogus", "foobar.com/test1-image:latest"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(125))
+		Expect(session.ErrorToString()).To(Equal("Error: no container with name or ID \"bogus\" found: no such container"))
 	})
 
 	It("podman commit single letter container", func() {
@@ -52,9 +56,9 @@ var _ = Describe("Podman commit", func() {
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "test1", "a"})
+		session := podmanTest.Podman([]string{"commit", "-q", "test1", "a"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"inspect", "localhost/a:latest"})
 		check.WaitWithDefaultTimeout()
@@ -67,9 +71,9 @@ var _ = Describe("Podman commit", func() {
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"container", "commit", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"container", "commit", "-q", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"image", "inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
@@ -82,9 +86,9 @@ var _ = Describe("Podman commit", func() {
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "-f", "docker", "--message", "testing-commit", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "-f", "docker", "--message", "testing-commit", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
@@ -97,9 +101,9 @@ var _ = Describe("Podman commit", func() {
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "--author", "snoopy", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "--author", "snoopy", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
@@ -110,39 +114,71 @@ var _ = Describe("Podman commit", func() {
 	It("podman commit container with change flag", func() {
 		test := podmanTest.Podman([]string{"run", "--name", "test1", "-d", ALPINE, "ls"})
 		test.WaitWithDefaultTimeout()
-		Expect(test).Should(Exit(0))
+		Expect(test).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "--change", "LABEL=image=blue", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "--change", "LABEL=image=blue", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
-		data := check.InspectImageJSON()
-		foundBlue := false
-		for _, i := range data[0].Labels {
-			if i == "blue" {
-				foundBlue = true
-				break
-			}
-		}
-		Expect(foundBlue).To(BeTrue())
+		inspectResults := check.InspectImageJSON()
+		Expect(inspectResults[0].Labels).To(HaveKeyWithValue("image", "blue"))
+	})
+
+	It("podman commit container with --config flag", func() {
+		test := podmanTest.Podman([]string{"run", "--name", "test1", "-d", ALPINE, "ls"})
+		test.WaitWithDefaultTimeout()
+		Expect(test).Should(ExitCleanly())
+		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
+
+		configFile, err := os.CreateTemp(podmanTest.TempDir, "")
+		Expect(err).Should(Succeed())
+		_, err = configFile.WriteString(`{"Labels":{"image":"green"}}`)
+		Expect(err).Should(Succeed())
+		configFile.Close()
+
+		session := podmanTest.Podman([]string{"commit", "-q", "--config", configFile.Name(), "test1", "foobar.com/test1-image:latest"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(ExitCleanly())
+
+		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
+		check.WaitWithDefaultTimeout()
+		inspectResults := check.InspectImageJSON()
+		Expect(inspectResults[0].Labels).To(HaveKeyWithValue("image", "green"))
+	})
+
+	It("podman commit container with --config pointing to trash", func() {
+		test := podmanTest.Podman([]string{"run", "--name", "test1", "-d", ALPINE, "ls"})
+		test.WaitWithDefaultTimeout()
+		Expect(test).Should(ExitCleanly())
+		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
+
+		configFile, err := os.CreateTemp(podmanTest.TempDir, "")
+		Expect(err).Should(Succeed())
+		_, err = configFile.WriteString("this is not valid JSON\n")
+		Expect(err).Should(Succeed())
+		configFile.Close()
+
+		session := podmanTest.Podman([]string{"commit", "-q", "--config", configFile.Name(), "test1", "foobar.com/test1-image:latest"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Not(ExitCleanly()))
 	})
 
 	It("podman commit container with --squash", func() {
 		test := podmanTest.Podman([]string{"run", "--name", "test1", "-d", ALPINE, "ls"})
 		test.WaitWithDefaultTimeout()
-		Expect(test).Should(Exit(0))
+		Expect(test).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "--squash", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "--squash", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"inspect", "--format", "{{.RootFS.Layers}}", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		// Check for one layers
 		Expect(strings.Fields(session.OutputToString())).To(HaveLen(1))
 	})
@@ -150,12 +186,12 @@ var _ = Describe("Podman commit", func() {
 	It("podman commit container with change flag and JSON entrypoint with =", func() {
 		test := podmanTest.Podman([]string{"run", "--name", "test1", "-d", ALPINE, "ls"})
 		test.WaitWithDefaultTimeout()
-		Expect(test).Should(Exit(0))
+		Expect(test).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "--change", `ENTRYPOINT ["foo", "bar=baz"]`, "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "--change", `ENTRYPOINT ["foo", "bar=baz"]`, "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
@@ -169,25 +205,25 @@ var _ = Describe("Podman commit", func() {
 	It("podman commit container with change CMD flag", func() {
 		test := podmanTest.Podman([]string{"run", "--name", "test1", "-d", ALPINE, "ls"})
 		test.WaitWithDefaultTimeout()
-		Expect(test).Should(Exit(0))
+		Expect(test).Should(ExitCleanly())
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "--change", "CMD a b c", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "--change", "CMD a b c", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"inspect", "--format", "{{.Config.Cmd}}", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("sh -c a b c"))
 
-		session = podmanTest.Podman([]string{"commit", "--change", "CMD=[\"a\",\"b\",\"c\"]", "test1", "foobar.com/test1-image:latest"})
+		session = podmanTest.Podman([]string{"commit", "-q", "--change", "CMD=[\"a\",\"b\",\"c\"]", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"inspect", "--format", "{{.Config.Cmd}}", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(Not(ContainSubstring("sh -c")))
 	})
 
@@ -196,27 +232,27 @@ var _ = Describe("Podman commit", func() {
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "--pause=false", "test1", "foobar.com/test1-image:latest"})
+		session := podmanTest.Podman([]string{"commit", "-q", "--pause=false", "test1", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
 		check.WaitWithDefaultTimeout()
-		Expect(check).Should(Exit(0))
+		Expect(check).Should(ExitCleanly())
 	})
 
 	It("podman commit with volumes mounts and no include-volumes", func() {
 		s := podmanTest.Podman([]string{"run", "--name", "test1", "-v", "/tmp:/foo", "alpine", "date"})
 		s.WaitWithDefaultTimeout()
-		Expect(s).Should(Exit(0))
+		Expect(s).Should(ExitCleanly())
 
-		c := podmanTest.Podman([]string{"commit", "test1", "newimage"})
+		c := podmanTest.Podman([]string{"commit", "-q", "test1", "newimage"})
 		c.WaitWithDefaultTimeout()
-		Expect(c).Should(Exit(0))
+		Expect(c).Should(ExitCleanly())
 
 		inspect := podmanTest.Podman([]string{"inspect", "newimage"})
 		inspect.WaitWithDefaultTimeout()
-		Expect(inspect).Should(Exit(0))
+		Expect(inspect).Should(ExitCleanly())
 		image := inspect.InspectImageJSON()
 		Expect(image[0].Config.Volumes).To(Not(HaveKey("/foo")))
 	})
@@ -227,35 +263,35 @@ var _ = Describe("Podman commit", func() {
 		SkipIfRemote("--testing Remote Volumes")
 		s := podmanTest.Podman([]string{"run", "--name", "test1", "-v", "/tmp:/foo", "alpine", "date"})
 		s.WaitWithDefaultTimeout()
-		Expect(s).Should(Exit(0))
+		Expect(s).Should(ExitCleanly())
 
-		c := podmanTest.Podman([]string{"commit", "--include-volumes", "test1", "newimage"})
+		c := podmanTest.Podman([]string{"commit", "-q", "--include-volumes", "test1", "newimage"})
 		c.WaitWithDefaultTimeout()
-		Expect(c).Should(Exit(0))
+		Expect(c).Should(ExitCleanly())
 
 		inspect := podmanTest.Podman([]string{"inspect", "newimage"})
 		inspect.WaitWithDefaultTimeout()
-		Expect(inspect).Should(Exit(0))
+		Expect(inspect).Should(ExitCleanly())
 		image := inspect.InspectImageJSON()
 		Expect(image[0].Config.Volumes).To(HaveKey("/foo"))
 
 		r := podmanTest.Podman([]string{"run", "newimage"})
 		r.WaitWithDefaultTimeout()
-		Expect(r).Should(Exit(0))
+		Expect(r).Should(ExitCleanly())
 	})
 
 	It("podman commit container check env variables", func() {
-		s := podmanTest.Podman([]string{"run", "--name", "test1", "-e", "TEST=1=1-01=9.01", "-it", "alpine", "true"})
+		s := podmanTest.Podman([]string{"run", "--name", "test1", "-e", "TEST=1=1-01=9.01", "alpine", "true"})
 		s.WaitWithDefaultTimeout()
-		Expect(s).Should(Exit(0))
+		Expect(s).Should(ExitCleanly())
 
-		c := podmanTest.Podman([]string{"commit", "test1", "newimage"})
+		c := podmanTest.Podman([]string{"commit", "-q", "test1", "newimage"})
 		c.WaitWithDefaultTimeout()
-		Expect(c).Should(Exit(0))
+		Expect(c).Should(ExitCleanly())
 
 		inspect := podmanTest.Podman([]string{"inspect", "newimage"})
 		inspect.WaitWithDefaultTimeout()
-		Expect(inspect).Should(Exit(0))
+		Expect(inspect).Should(ExitCleanly())
 		image := inspect.InspectImageJSON()
 
 		envMap := make(map[string]bool)
@@ -270,21 +306,17 @@ var _ = Describe("Podman commit", func() {
 		cwd, err := os.Getwd()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(os.Chdir(os.TempDir())).To(Succeed())
-		targetPath, err := CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
+		targetPath := podmanTest.TempDir
 		targetFile := filepath.Join(targetPath, "idFile")
-		defer Expect(os.RemoveAll(targetFile)).To(BeNil())
 		defer Expect(os.Chdir(cwd)).To(BeNil())
 
 		_, ec, _ := podmanTest.RunLsContainer("test1")
 		Expect(ec).To(Equal(0))
 		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
 
-		session := podmanTest.Podman([]string{"commit", "test1", "foobar.com/test1-image:latest", "--iidfile", targetFile})
+		session := podmanTest.Podman([]string{"commit", "-q", "test1", "foobar.com/test1-image:latest", "--iidfile", targetFile})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		id, _ := os.ReadFile(targetFile)
 		check := podmanTest.Podman([]string{"inspect", "foobar.com/test1-image:latest"})
@@ -301,16 +333,16 @@ var _ = Describe("Podman commit", func() {
 
 		session := podmanTest.Podman([]string{"secret", "create", "mysecret", secretFilePath})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"run", "--secret", "mysecret", "--name", "secr", ALPINE, "cat", "/run/secrets/mysecret"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(Equal(secretsString))
 
-		session = podmanTest.Podman([]string{"commit", "secr", "foobar.com/test1-image:latest"})
+		session = podmanTest.Podman([]string{"commit", "-q", "secr", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"run", "foobar.com/test1-image:latest", "cat", "/run/secrets/mysecret"})
 		session.WaitWithDefaultTimeout()
@@ -326,16 +358,16 @@ var _ = Describe("Podman commit", func() {
 
 		session := podmanTest.Podman([]string{"secret", "create", "mysecret", secretFilePath})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"run", "--secret", "source=mysecret,type=env", "--name", "secr", ALPINE, "printenv", "mysecret"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(Equal(secretsString))
 
-		session = podmanTest.Podman([]string{"commit", "secr", "foobar.com/test1-image:latest"})
+		session = podmanTest.Podman([]string{"commit", "-q", "secr", "foobar.com/test1-image:latest"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"run", "foobar.com/test1-image:latest", "printenv", "mysecret"})
 		session.WaitWithDefaultTimeout()
@@ -346,16 +378,16 @@ var _ = Describe("Podman commit", func() {
 		name := "testcon"
 		s := podmanTest.Podman([]string{"run", "--name", name, "-p", "8585:80", ALPINE, "true"})
 		s.WaitWithDefaultTimeout()
-		Expect(s).Should(Exit(0))
+		Expect(s).Should(ExitCleanly())
 
 		newImageName := "newimage"
-		c := podmanTest.Podman([]string{"commit", name, newImageName})
+		c := podmanTest.Podman([]string{"commit", "-q", name, newImageName})
 		c.WaitWithDefaultTimeout()
-		Expect(c).Should(Exit(0))
+		Expect(c).Should(ExitCleanly())
 
 		inspect := podmanTest.Podman([]string{"inspect", newImageName})
 		inspect.WaitWithDefaultTimeout()
-		Expect(inspect).Should(Exit(0))
+		Expect(inspect).Should(ExitCleanly())
 		images := inspect.InspectImageJSON()
 		Expect(images).To(HaveLen(1))
 		Expect(images[0].Config.ExposedPorts).To(HaveKey("80/tcp"))
@@ -363,16 +395,16 @@ var _ = Describe("Podman commit", func() {
 		name = "testcon2"
 		s = podmanTest.Podman([]string{"run", "--name", name, "-d", NGINX_IMAGE})
 		s.WaitWithDefaultTimeout()
-		Expect(s).Should(Exit(0))
+		Expect(s).Should(ExitCleanly())
 
 		newImageName = "newimage2"
-		c = podmanTest.Podman([]string{"commit", name, newImageName})
+		c = podmanTest.Podman([]string{"commit", "-q", name, newImageName})
 		c.WaitWithDefaultTimeout()
-		Expect(c).Should(Exit(0))
+		Expect(c).Should(ExitCleanly())
 
 		inspect = podmanTest.Podman([]string{"inspect", newImageName})
 		inspect.WaitWithDefaultTimeout()
-		Expect(inspect).Should(Exit(0))
+		Expect(inspect).Should(ExitCleanly())
 		images = inspect.InspectImageJSON()
 		Expect(images).To(HaveLen(1))
 		Expect(images[0].Config.ExposedPorts).To(HaveKey("80/tcp"))

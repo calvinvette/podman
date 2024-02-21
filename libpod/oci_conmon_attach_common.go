@@ -1,9 +1,9 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,10 +13,10 @@ import (
 	"syscall"
 
 	"github.com/containers/common/pkg/config"
+	"github.com/containers/common/pkg/detach"
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/moby/term"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -86,7 +86,7 @@ func (r *ConmonOCIRuntime) Attach(c *Container, params *AttachOptions) error {
 	// If starting was requested, start the container and notify when that's
 	// done.
 	if params.Start {
-		if err := c.start(); err != nil {
+		if err := c.start(context.TODO()); err != nil {
 			return err
 		}
 		params.Started <- true
@@ -234,7 +234,7 @@ func setupStdioChannels(streams *define.AttachStreams, conn *net.UnixConn, detac
 	go func() {
 		var err error
 		if streams.AttachInput {
-			_, err = util.CopyDetachable(conn, streams.InputStream, detachKeys)
+			_, err = detach.Copy(conn, streams.InputStream, detachKeys)
 		}
 		stdinDone <- err
 	}()

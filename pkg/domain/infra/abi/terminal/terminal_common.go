@@ -1,5 +1,4 @@
 //go:build linux || freebsd
-// +build linux freebsd
 
 package terminal
 
@@ -10,8 +9,8 @@ import (
 	"os"
 
 	"github.com/containers/common/pkg/resize"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/term"
 )
@@ -84,21 +83,19 @@ func StartAttachCtr(ctx context.Context, ctr *libpod.Container, stdout, stderr, 
 		streams.AttachInput = false
 	}
 
-	if !startContainer {
-		if sigProxy {
-			ProxySignals(ctr)
-		}
+	if sigProxy {
+		// To prevent a race condition, install the signal handler
+		// before starting/attaching to the container.
+		ProxySignals(ctr)
+	}
 
+	if !startContainer {
 		return ctr.Attach(streams, detachKeys, resize)
 	}
 
 	attachChan, err := ctr.StartAndAttach(ctx, streams, detachKeys, resize, true)
 	if err != nil {
 		return err
-	}
-
-	if sigProxy {
-		ProxySignals(ctr)
 	}
 
 	if stdout == nil && stderr == nil {

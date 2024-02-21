@@ -11,7 +11,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 	cfg "github.com/containers/storage/pkg/config"
+	"github.com/containers/storage/pkg/homedir"
 	"github.com/containers/storage/pkg/idtools"
+	"github.com/containers/storage/pkg/unshare"
 	"github.com/sirupsen/logrus"
 )
 
@@ -19,7 +21,9 @@ import (
 type TomlConfig struct {
 	Storage struct {
 		Driver              string            `toml:"driver,omitempty"`
+		DriverPriority      []string          `toml:"driver_priority,omitempty"`
 		RunRoot             string            `toml:"runroot,omitempty"`
+		ImageStore          string            `toml:"imagestore,omitempty"`
 		GraphRoot           string            `toml:"graphroot,omitempty"`
 		RootlessStoragePath string            `toml:"rootless_storage_path,omitempty"`
 		TransientStore      bool              `toml:"transient_store,omitempty"`
@@ -85,7 +89,7 @@ func loadDefaultStoreOptions() {
 
 	_, err := os.Stat(defaultOverrideConfigFile)
 	if err == nil {
-		// The DefaultConfigFile(rootless) function returns the path
+		// The DefaultConfigFile() function returns the path
 		// of the used storage.conf file, by returning defaultConfigFile
 		// If override exists containers/storage uses it by default.
 		defaultConfigFile = defaultOverrideConfigFile
@@ -107,21 +111,41 @@ func loadDefaultStoreOptions() {
 	setDefaults()
 }
 
-// defaultStoreOptionsIsolated is an internal implementation detail of DefaultStoreOptions to allow testing.
-// Everyone but the tests this is intended for should only call DefaultStoreOptions, never this function.
-func defaultStoreOptionsIsolated(rootless bool, rootlessUID int, storageConf string) (StoreOptions, error) {
+// loadStoreOptions returns the default storage ops for containers
+func loadStoreOptions() (StoreOptions, error) {
+	storageConf, err := DefaultConfigFile()
+	if err != nil {
+		return defaultStoreOptions, err
+	}
+	return loadStoreOptionsFromConfFile(storageConf)
+}
+
+// usePerUserStorage returns whether the user private storage must be used.
+// We cannot simply use the unshare.IsRootless() condition, because
+// that checks only if the current process needs a user namespace to
+// work and it would break cases where the process is already created
+// in a user namespace (e.g. nested Podman/Buildah) and the desired
+// behavior is to use system paths instead of user private paths.
+func usePerUserStorage() bool {
+	return unshare.IsRootless() && unshare.GetRootlessUID() != 0
+}
+
+// loadStoreOptionsFromConfFile is an internal implementation detail of DefaultStoreOptions to allow testing.
+// Everyone but the tests this is intended for should only call loadStoreOptions, never this function.
+func loadStoreOptionsFromConfFile(storageConf string) (StoreOptions, error) {
 	var (
 		defaultRootlessRunRoot   string
 		defaultRootlessGraphRoot string
 		err                      error
 	)
+
 	defaultStoreOptionsOnce.Do(loadDefaultStoreOptions)
 	if loadDefaultStoreOptionsErr != nil {
 		return StoreOptions{}, loadDefaultStoreOptionsErr
 	}
 	storageOpts := defaultStoreOptions
-	if rootless && rootlessUID != 0 {
-		storageOpts, err = getRootlessStorageOpts(rootlessUID, storageOpts)
+	if usePerUserStorage() {
+		storageOpts, err = getRootlessStorageOpts(storageOpts)
 		if err != nil {
 			return storageOpts, err
 		}
@@ -135,7 +159,7 @@ func defaultStoreOptionsIsolated(rootless bool, rootlessUID int, storageConf str
 		defaultRootlessGraphRoot = storageOpts.GraphRoot
 		storageOpts = StoreOptions{}
 		reloadConfigurationFileIfNeeded(storageConf, &storageOpts)
-		if rootless && rootlessUID != 0 {
+		if usePerUserStorage() {
 			// If the file did not specify a graphroot or runroot,
 			// set sane defaults so we don't try and use root-owned
 			// directories
@@ -151,20 +175,25 @@ func defaultStoreOptionsIsolated(rootless bool, rootlessUID int, storageConf str
 			}
 		}
 	}
-	if storageOpts.RunRoot != "" {
-		runRoot, err := expandEnvPath(storageOpts.RunRoot, rootlessUID)
-		if err != nil {
-			return storageOpts, err
-		}
-		storageOpts.RunRoot = runRoot
+	if storageOpts.RunRoot == "" {
+		return storageOpts, fmt.Errorf("runroot must be set")
 	}
-	if storageOpts.GraphRoot != "" {
-		graphRoot, err := expandEnvPath(storageOpts.GraphRoot, rootlessUID)
-		if err != nil {
-			return storageOpts, err
-		}
-		storageOpts.GraphRoot = graphRoot
+	rootlessUID := unshare.GetRootlessUID()
+	runRoot, err := expandEnvPath(storageOpts.RunRoot, rootlessUID)
+	if err != nil {
+		return storageOpts, err
 	}
+	storageOpts.RunRoot = runRoot
+
+	if storageOpts.GraphRoot == "" {
+		return storageOpts, fmt.Errorf("graphroot must be set")
+	}
+	graphRoot, err := expandEnvPath(storageOpts.GraphRoot, rootlessUID)
+	if err != nil {
+		return storageOpts, err
+	}
+	storageOpts.GraphRoot = graphRoot
+
 	if storageOpts.RootlessStoragePath != "" {
 		storagePath, err := expandEnvPath(storageOpts.RootlessStoragePath, rootlessUID)
 		if err != nil {
@@ -173,29 +202,24 @@ func defaultStoreOptionsIsolated(rootless bool, rootlessUID int, storageConf str
 		storageOpts.RootlessStoragePath = storagePath
 	}
 
+	if storageOpts.ImageStore != "" && storageOpts.ImageStore == storageOpts.GraphRoot {
+		return storageOpts, fmt.Errorf("imagestore %s must either be not set or be a different than graphroot", storageOpts.ImageStore)
+	}
+
 	return storageOpts, nil
 }
 
-// loadStoreOptions returns the default storage ops for containers
-func loadStoreOptions(rootless bool, rootlessUID int) (StoreOptions, error) {
-	storageConf, err := DefaultConfigFile(rootless && rootlessUID != 0)
-	if err != nil {
-		return defaultStoreOptions, err
-	}
-	return defaultStoreOptionsIsolated(rootless, rootlessUID, storageConf)
-}
-
-// UpdateOptions should be called iff container engine recieved a SIGHUP,
+// UpdateOptions should be called iff container engine received a SIGHUP,
 // otherwise use DefaultStoreOptions
-func UpdateStoreOptions(rootless bool, rootlessUID int) (StoreOptions, error) {
-	storeOptions, storeError = loadStoreOptions(rootless, rootlessUID)
+func UpdateStoreOptions() (StoreOptions, error) {
+	storeOptions, storeError = loadStoreOptions()
 	return storeOptions, storeError
 }
 
 // DefaultStoreOptions returns the default storage ops for containers
-func DefaultStoreOptions(rootless bool, rootlessUID int) (StoreOptions, error) {
+func DefaultStoreOptions() (StoreOptions, error) {
 	once.Do(func() {
-		storeOptions, storeError = loadStoreOptions(rootless, rootlessUID)
+		storeOptions, storeError = loadStoreOptions()
 	})
 	return storeOptions, storeError
 }
@@ -210,13 +234,22 @@ type StoreOptions struct {
 	// GraphRoot is the filesystem path under which we will store the
 	// contents of layers, images, and containers.
 	GraphRoot string `json:"root,omitempty"`
+	// Image Store is the alternate location of image store if a location
+	// separate from the container store is required.
+	ImageStore string `json:"imagestore,omitempty"`
 	// RootlessStoragePath is the storage path for rootless users
 	// default $HOME/.local/share/containers/storage
 	RootlessStoragePath string `toml:"rootless_storage_path"`
-	// GraphDriverName is the underlying storage driver that we'll be
-	// using.  It only needs to be specified the first time a Store is
-	// initialized for a given RunRoot and GraphRoot.
+	// If the driver is not specified, the best suited driver will be picked
+	// either from GraphDriverPriority, if specified, or from the platform
+	// dependent priority list (in that order).
 	GraphDriverName string `json:"driver,omitempty"`
+	// GraphDriverPriority is a list of storage drivers that will be tried
+	// to initialize the Store for a given RunRoot and GraphRoot unless a
+	// GraphDriverName is set.
+	// This list can be used to define a custom order in which the drivers
+	// will be tried.
+	GraphDriverPriority []string `json:"driver-priority,omitempty"`
 	// GraphDriverOptions are driver-specific options.
 	GraphDriverOptions []string `json:"driver-options,omitempty"`
 	// UIDMap and GIDMap are used for setting up a container's root filesystem
@@ -251,14 +284,26 @@ func isRootlessDriver(driver string) bool {
 }
 
 // getRootlessStorageOpts returns the storage opts for containers running as non root
-func getRootlessStorageOpts(rootlessUID int, systemOpts StoreOptions) (StoreOptions, error) {
+func getRootlessStorageOpts(systemOpts StoreOptions) (StoreOptions, error) {
 	var opts StoreOptions
 
-	dataDir, rootlessRuntime, err := getRootlessDirInfo(rootlessUID)
+	rootlessUID := unshare.GetRootlessUID()
+
+	dataDir, err := homedir.GetDataHome()
 	if err != nil {
 		return opts, err
 	}
-	opts.RunRoot = rootlessRuntime
+
+	rootlessRuntime, err := homedir.GetRuntimeDir()
+	if err != nil {
+		return opts, err
+	}
+
+	opts.RunRoot = filepath.Join(rootlessRuntime, "containers")
+	if err := os.MkdirAll(opts.RunRoot, 0o700); err != nil {
+		return opts, fmt.Errorf("unable to make rootless runtime: %w", err)
+	}
+
 	opts.PullOptions = systemOpts.PullOptions
 	if systemOpts.RootlessStoragePath != "" {
 		opts.GraphRoot, err = expandEnvPath(systemOpts.RootlessStoragePath, rootlessUID)
@@ -284,6 +329,7 @@ func getRootlessStorageOpts(rootlessUID int, systemOpts StoreOptions) (StoreOpti
 	// present.
 	if defaultConfigFileSet {
 		opts.GraphDriverOptions = systemOpts.GraphDriverOptions
+		opts.ImageStore = systemOpts.ImageStore
 	} else if opts.GraphDriverName == overlayDriver {
 		for _, o := range systemOpts.GraphDriverOptions {
 			if strings.Contains(o, "ignore_chown_errors") {
@@ -293,7 +339,27 @@ func getRootlessStorageOpts(rootlessUID int, systemOpts StoreOptions) (StoreOpti
 		}
 	}
 	if opts.GraphDriverName == "" {
-		opts.GraphDriverName = "vfs"
+		if len(systemOpts.GraphDriverPriority) == 0 {
+			dirEntries, err := os.ReadDir(opts.GraphRoot)
+			if err == nil {
+				for _, entry := range dirEntries {
+					if strings.HasSuffix(entry.Name(), "-images") {
+						opts.GraphDriverName = strings.TrimSuffix(entry.Name(), "-images")
+						break
+					}
+				}
+			}
+
+			if opts.GraphDriverName == "" {
+				if canUseRootlessOverlay(opts.GraphRoot, opts.RunRoot) {
+					opts.GraphDriverName = overlayDriver
+				} else {
+					opts.GraphDriverName = "vfs"
+				}
+			}
+		} else {
+			opts.GraphDriverPriority = systemOpts.GraphDriverPriority
+		}
 	}
 
 	if os.Getenv("STORAGE_OPTS") != "" {
@@ -301,12 +367,6 @@ func getRootlessStorageOpts(rootlessUID int, systemOpts StoreOptions) (StoreOpti
 	}
 
 	return opts, nil
-}
-
-// DefaultStoreOptionsAutoDetectUID returns the default storage ops for containers
-func DefaultStoreOptionsAutoDetectUID() (StoreOptions, error) {
-	uid := getRootlessUID()
-	return DefaultStoreOptions(uid != 0, uid)
 }
 
 var prevReloadConfig = struct {
@@ -380,14 +440,18 @@ func ReloadConfigurationFile(configFile string, storeOptions *StoreOptions) erro
 		logrus.Warnf("Switching default driver from overlay2 to the equivalent overlay driver")
 		storeOptions.GraphDriverName = overlayDriver
 	}
-	if storeOptions.GraphDriverName == "" {
-		logrus.Errorf("The storage 'driver' option must be set in %s to guarantee proper operation", configFile)
+	storeOptions.GraphDriverPriority = config.Storage.DriverPriority
+	if storeOptions.GraphDriverName == "" && len(storeOptions.GraphDriverPriority) == 0 {
+		logrus.Warnf("The storage 'driver' option should be set in %s. A driver was picked automatically.", configFile)
 	}
 	if config.Storage.RunRoot != "" {
 		storeOptions.RunRoot = config.Storage.RunRoot
 	}
 	if config.Storage.GraphRoot != "" {
 		storeOptions.GraphRoot = config.Storage.GraphRoot
+	}
+	if config.Storage.ImageStore != "" {
+		storeOptions.ImageStore = config.Storage.ImageStore
 	}
 	if config.Storage.RootlessStoragePath != "" {
 		storeOptions.RootlessStoragePath = config.Storage.RootlessStoragePath
@@ -416,6 +480,16 @@ func ReloadConfigurationFile(configFile string, storeOptions *StoreOptions) erro
 	if config.Storage.Options.MountOpt != "" {
 		storeOptions.GraphDriverOptions = append(storeOptions.GraphDriverOptions, fmt.Sprintf("%s.mountopt=%s", config.Storage.Driver, config.Storage.Options.MountOpt))
 	}
+
+	uidmap, err := idtools.ParseIDMap([]string{config.Storage.Options.RemapUIDs}, "remap-uids")
+	if err != nil {
+		return err
+	}
+	gidmap, err := idtools.ParseIDMap([]string{config.Storage.Options.RemapGIDs}, "remap-gids")
+	if err != nil {
+		return err
+	}
+
 	if config.Storage.Options.RemapUser != "" && config.Storage.Options.RemapGroup == "" {
 		config.Storage.Options.RemapGroup = config.Storage.Options.RemapUser
 	}
@@ -428,19 +502,9 @@ func ReloadConfigurationFile(configFile string, storeOptions *StoreOptions) erro
 			logrus.Warningf("Error initializing ID mappings for %s:%s %v\n", config.Storage.Options.RemapUser, config.Storage.Options.RemapGroup, err)
 			return err
 		}
-		storeOptions.UIDMap = mappings.UIDs()
-		storeOptions.GIDMap = mappings.GIDs()
+		uidmap = mappings.UIDs()
+		gidmap = mappings.GIDs()
 	}
-
-	uidmap, err := idtools.ParseIDMap([]string{config.Storage.Options.RemapUIDs}, "remap-uids")
-	if err != nil {
-		return err
-	}
-	gidmap, err := idtools.ParseIDMap([]string{config.Storage.Options.RemapGIDs}, "remap-gids")
-	if err != nil {
-		return err
-	}
-
 	storeOptions.UIDMap = uidmap
 	storeOptions.GIDMap = gidmap
 	storeOptions.RootAutoNsUser = config.Storage.Options.RootAutoUsernsUser
@@ -474,8 +538,8 @@ func Options() (StoreOptions, error) {
 }
 
 // Save overwrites the tomlConfig in storage.conf with the given conf
-func Save(conf TomlConfig, rootless bool) error {
-	configFile, err := DefaultConfigFile(rootless)
+func Save(conf TomlConfig) error {
+	configFile, err := DefaultConfigFile()
 	if err != nil {
 		return err
 	}
@@ -493,10 +557,10 @@ func Save(conf TomlConfig, rootless bool) error {
 }
 
 // StorageConfig is used to retrieve the storage.conf toml in order to overwrite it
-func StorageConfig(rootless bool) (*TomlConfig, error) {
+func StorageConfig() (*TomlConfig, error) {
 	config := new(TomlConfig)
 
-	configFile, err := DefaultConfigFile(rootless)
+	configFile, err := DefaultConfigFile()
 	if err != nil {
 		return nil, err
 	}

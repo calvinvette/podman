@@ -8,14 +8,6 @@ load helpers.network
 
 CHECKED_ROOTLESS=
 function setup() {
-    # FIXME: https://bugs.launchpad.net/ubuntu/+source/linux/+bug/1857257
-    # TL;DR they keep fixing it then breaking it again. There's a test we
-    # could run to see if it's fixed, but it's way too complicated. Since
-    # integration tests also skip checkpoint tests on Ubuntu, do the same here.
-    if is_ubuntu; then
-        skip "FIXME: checkpointing broken in Ubuntu 2004, 2104, 2110, 2204, ..."
-    fi
-
     # None of these tests work rootless....
     if is_rootless; then
         # ...however, is that a genuine cast-in-stone limitation, or one
@@ -125,13 +117,8 @@ function teardown() {
 @test "podman checkpoint --export, with volumes" {
     skip_if_remote "Test uses --root/--runroot, which are N/A over remote"
 
-    # Create a root in tempdir. We will run a container here.
-    local p_root=${PODMAN_TMPDIR}/testroot/root
-    local p_runroot=${PODMAN_TMPDIR}/testroot/runroot
-    mkdir -p $p_root $p_runroot
-
     # To avoid network pull, copy $IMAGE straight to temp root
-    local p_opts="--root $p_root --runroot $p_runroot --events-backend file"
+    local p_opts="$(podman_isolation_opts ${PODMAN_TMPDIR}) --events-backend file"
     run_podman         save -o $PODMAN_TMPDIR/image.tar $IMAGE
     run_podman $p_opts load -i $PODMAN_TMPDIR/image.tar
 
@@ -211,7 +198,9 @@ function teardown() {
     is "$output" "$cid" "podman container restore"
 
     # Signal the container to continue; this is where the 1-2-3s will come from
-    run_podman exec $cid rm /wait
+    # The '-d' is because container exit is racy: the exec process itself
+    # could get caught and killed by cleanup, causing this step to exit 137
+    run_podman exec -d $cid rm /wait
 
     # Wait for the container to stop
     run_podman wait $cid
@@ -228,7 +217,7 @@ function teardown() {
     local subnet="$(random_rfc1918_subnet)"
     run_podman network create --subnet "$subnet.0/24" $netname
 
-    run_podman run -d --network $netname $IMAGE sleep inf
+    run_podman run -d --network $netname $IMAGE top
     cid="$output"
     # get current ip and mac
     run_podman inspect $cid --format "{{(index .NetworkSettings.Networks \"$netname\").IPAddress}}"
@@ -316,7 +305,7 @@ function teardown() {
     # now create a container with a static mac and ip
     local static_ip="$subnet.2"
     local static_mac="92:d0:c6:0a:29:38"
-    run_podman run -d --network "$netname:ip=$static_ip,mac=$static_mac" $IMAGE sleep inf
+    run_podman run -d --network "$netname:ip=$static_ip,mac=$static_mac" $IMAGE top
     cid="$output"
 
     run_podman container checkpoint $cid
@@ -346,7 +335,7 @@ function teardown() {
     run_podman rm -t 0 -f $cid
 
     # now create container again and try the same again with --export and --import
-    run_podman run -d --network "$netname:ip=$static_ip,mac=$static_mac" $IMAGE sleep inf
+    run_podman run -d --network "$netname:ip=$static_ip,mac=$static_mac" $IMAGE top
     cid="$output"
 
     run_podman container checkpoint --export "$archive" $cid
@@ -401,6 +390,29 @@ function teardown() {
 
     run_podman rm -t 0 -f $cid
     run_podman network rm $netname
+}
+
+# rhbz#2177611 : podman breaks checkpoint/restore
+@test "podman checkpoint/restore the latest container" {
+    skip_if_remote "podman-remote does not support --latest option"
+    # checkpoint/restore -l must print the IDs
+    run_podman run -d $IMAGE top
+    ctrID="$output"
+    run_podman container checkpoint --latest
+    is "$output" "$ctrID"
+
+    run_podman container inspect \
+               --format '{{.State.Status}}:{{.State.Running}}:{{.State.Paused}}:{{.State.Checkpointed}}' $ctrID
+    is "$output" "exited:false:false:true" "State. Status:Running:Pause:Checkpointed"
+
+    run_podman container restore -l
+    is "$output" "$ctrID"
+
+    run_podman container inspect \
+               --format '{{.State.Status}}:{{.State.Running}}:{{.State.Paused}}:{{.State.Checkpointed}}' $ctrID
+    is "$output" "running:true:false:false" "State. Status:Running:Pause:Checkpointed"
+
+    run_podman rm -t 0 -f $ctrID
 }
 
 # vim: filetype=sh

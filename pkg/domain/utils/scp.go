@@ -12,8 +12,8 @@ import (
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/ssh"
 	"github.com/containers/image/v5/transports/alltransports"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,11 +31,6 @@ func ExecuteTransfer(src, dst string, parentFlags []string, quiet bool, sshMode 
 	f, err := os.CreateTemp("", "podman") // open temp file for load/save output
 	if err != nil {
 		return nil, nil, nil, nil, err
-	}
-
-	confR, err := config.NewConfig("") // create a hand made config for the remote engine since we might use remote and native at once
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("could not make config: %w", err)
 	}
 
 	locations := []*entities.ImageScpOptions{}
@@ -84,17 +79,15 @@ func ExecuteTransfer(src, dst string, parentFlags []string, quiet bool, sshMode 
 		cliConnections = []string{}
 	}
 
-	cfg, err := config.ReadCustomConfig() // get ready to set ssh destination if necessary
+	cfg, err := config.Default()
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	var serv map[string]config.Destination
-	serv, err = GetServiceInformation(&sshInfo, cliConnections, cfg)
+	err = GetServiceInformation(&sshInfo, cliConnections, cfg)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
-	confR.Engine = config.EngineConfig{Remote: true, CgroupManager: "cgroupfs", ServiceDestinations: serv} // pass the service dest (either remote or something else) to engine
 	saveCmd, loadCmd := CreateCommands(source, dest, parentFlags, podman)
 
 	switch {
@@ -212,22 +205,23 @@ func LoginUser(user string) (*exec.Cmd, error) {
 // and copies the saved image dir over to the remote host and then loads it onto the machine
 // returns a string containing output or an error
 func LoadToRemote(dest entities.ImageScpOptions, localFile string, tag string, url *url.URL, iden string, sshEngine ssh.EngineMode) (string, string, error) {
-	port, err := strconv.Atoi(url.Port())
-	if err != nil {
-		return "", "", err
+	port := 0
+	urlPort := url.Port()
+	if urlPort != "" {
+		var err error
+		port, err = strconv.Atoi(url.Port())
+		if err != nil {
+			return "", "", err
+		}
 	}
 
-	remoteFile, err := ssh.Exec(&ssh.ConnectionExecOptions{Host: url.String(), Port: port, User: url.User, Args: []string{"mktemp"}}, sshEngine)
+	input, err := os.Open(localFile)
 	if err != nil {
 		return "", "", err
 	}
+	defer input.Close()
 
-	opts := ssh.ConnectionScpOptions{User: url.User, Identity: iden, Port: port, Source: localFile, Destination: "ssh://" + url.User.String() + "@" + url.Hostname() + ":" + remoteFile}
-	scpRep, err := ssh.Scp(&opts, sshEngine)
-	if err != nil {
-		return "", "", err
-	}
-	out, err := ssh.Exec(&ssh.ConnectionExecOptions{Host: url.String(), Port: port, User: url.User, Args: []string{"podman", "image", "load", "--input=" + scpRep + ";", "rm", scpRep}}, sshEngine)
+	out, err := ssh.ExecWithInput(&ssh.ConnectionExecOptions{Host: url.String(), Identity: iden, Port: port, User: url.User, Args: []string{"podman", "image", "load"}}, sshEngine, input)
 	if err != nil {
 		return "", "", err
 	}
@@ -238,7 +232,7 @@ func LoadToRemote(dest entities.ImageScpOptions, localFile string, tag string, u
 	outArr := strings.Split(rep, " ")
 	id := outArr[len(outArr)-1]
 	if len(dest.Tag) > 0 { // tag the remote image using the output ID
-		_, err := ssh.Exec(&ssh.ConnectionExecOptions{Host: url.Hostname(), Port: port, User: url.User, Args: []string{"podman", "image", "tag", id, dest.Tag}}, sshEngine)
+		_, err := ssh.Exec(&ssh.ConnectionExecOptions{Host: url.String(), Identity: iden, Port: port, User: url.User, Args: []string{"podman", "image", "tag", id, dest.Tag}}, sshEngine)
 		if err != nil {
 			return "", "", err
 		}
@@ -257,17 +251,22 @@ func SaveToRemote(image, localFile string, tag string, uri *url.URL, iden string
 		return fmt.Errorf("renaming of an image is currently not supported: %w", define.ErrInvalidArg)
 	}
 
-	port, err := strconv.Atoi(uri.Port())
+	port := 0
+	urlPort := uri.Port()
+	if urlPort != "" {
+		var err error
+		port, err = strconv.Atoi(uri.Port())
+		if err != nil {
+			return err
+		}
+	}
+
+	remoteFile, err := ssh.Exec(&ssh.ConnectionExecOptions{Host: uri.String(), Identity: iden, Port: port, User: uri.User, Args: []string{"mktemp"}}, sshEngine)
 	if err != nil {
 		return err
 	}
 
-	remoteFile, err := ssh.Exec(&ssh.ConnectionExecOptions{Host: uri.String(), Port: port, User: uri.User, Args: []string{"mktemp"}}, sshEngine)
-	if err != nil {
-		return err
-	}
-
-	_, err = ssh.Exec(&ssh.ConnectionExecOptions{Host: uri.String(), Port: port, User: uri.User, Args: []string{"podman", "image", "save", image, "--format", "oci-archive", "--output", remoteFile}}, sshEngine)
+	_, err = ssh.Exec(&ssh.ConnectionExecOptions{Host: uri.String(), Identity: iden, Port: port, User: uri.User, Args: []string{"podman", "image", "save", image, "--format", "oci-archive", "--output", remoteFile}}, sshEngine)
 	if err != nil {
 		return err
 	}
@@ -277,7 +276,7 @@ func SaveToRemote(image, localFile string, tag string, uri *url.URL, iden string
 	if err != nil {
 		return err
 	}
-	_, err = ssh.Exec(&ssh.ConnectionExecOptions{Host: uri.String(), Port: port, User: uri.User, Args: []string{"rm", scpRep}}, sshEngine)
+	_, err = ssh.Exec(&ssh.ConnectionExecOptions{Host: uri.String(), Identity: iden, Port: port, User: uri.User, Args: []string{"rm", scpRep}}, sshEngine)
 	if err != nil {
 		logrus.Errorf("Removing file on endpoint: %v", err)
 	}
@@ -400,16 +399,16 @@ func RemoteArgLength(input string, side int) int {
 	return -1
 }
 
-// GetSerivceInformation takes the parsed list of hosts to connect to and validates the information
-func GetServiceInformation(sshInfo *entities.ImageScpConnections, cliConnections []string, cfg *config.Config) (map[string]config.Destination, error) {
-	var serv map[string]config.Destination
+// GetServiceInformation takes the parsed list of hosts to connect to and validates the information
+func GetServiceInformation(sshInfo *entities.ImageScpConnections, cliConnections []string, cfg *config.Config) error {
 	var urlS string
 	var iden string
 	for i, val := range cliConnections {
-		splitEnv := strings.SplitN(val, "::", 2)
-		sshInfo.Connections = append(sshInfo.Connections, splitEnv[0])
-		conn, found := cfg.Engine.ServiceDestinations[sshInfo.Connections[i]]
-		if found {
+		connection, _, _ := strings.Cut(val, "::")
+		sshInfo.Connections = append(sshInfo.Connections, connection)
+		conn, err := cfg.GetConnection(sshInfo.Connections[i], false)
+		if err == nil {
+			// connection found
 			urlS = conn.URI
 			iden = conn.Identity
 		} else { // no match, warn user and do a manual connection.
@@ -419,17 +418,17 @@ func GetServiceInformation(sshInfo *entities.ImageScpConnections, cliConnections
 		}
 		urlFinal, err := url.Parse(urlS) // create an actual url to pass to exec command
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if urlFinal.User.Username() == "" {
 			if urlFinal.User, err = GetUserInfo(urlFinal); err != nil {
-				return nil, err
+				return err
 			}
 		}
 		sshInfo.URI = append(sshInfo.URI, urlFinal)
 		sshInfo.Identities = append(sshInfo.Identities, iden)
 	}
-	return serv, nil
+	return nil
 }
 
 func GetUserInfo(uri *url.URL) (*url.Userinfo, error) {

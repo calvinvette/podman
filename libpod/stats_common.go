@@ -1,12 +1,11 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 )
 
 // GetContainerStats gets the running stats for a given container.
@@ -42,8 +41,19 @@ func (c *Container) GetContainerStats(previousStats *define.ContainerStats) (*de
 		}
 	}
 
+	netStats, err := getContainerNetIO(c)
+	if err != nil {
+		return nil, err
+	}
+	stats.Network = netStats
+
 	if err := c.getPlatformContainerStats(stats, previousStats); err != nil {
 		return nil, err
 	}
 	return stats, nil
+}
+
+// GetOnlineCPUs returns the number of online CPUs as set in the container cpu-set using sched_getaffinity
+func GetOnlineCPUs(container *Container) (int, error) {
+	return getOnlineCPUs(container)
 }

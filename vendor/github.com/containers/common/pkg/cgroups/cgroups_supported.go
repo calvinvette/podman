@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package cgroups
 
@@ -15,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	systemdDbus "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/godbus/dbus/v5"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,6 +36,13 @@ func IsCgroup2UnifiedMode() (bool, error) {
 		}
 	})
 	return isUnified, isUnifiedErr
+}
+
+// UserConnection returns an user connection to D-BUS
+func UserConnection(uid int) (*systemdDbus.Conn, error) {
+	return systemdDbus.NewConnection(func() (*dbus.Conn, error) {
+		return dbusAuthConnection(uid, dbus.SessionBusPrivateNoAutoStartup)
+	})
 }
 
 // UserOwnsCurrentSystemdCgroup checks whether the current EUID owns the

@@ -4,7 +4,7 @@ package images
 import (
 	"net/url"
 
-	"github.com/containers/podman/v4/pkg/bindings/internal/util"
+	"github.com/containers/podman/v5/pkg/bindings/internal/util"
 )
 
 // Changed returns true if named field has been set
@@ -90,4 +90,34 @@ func (o *SearchOptions) GetListTags() bool {
 		return z
 	}
 	return *o.ListTags
+}
+
+// WithUsername set field Username to given value
+func (o *SearchOptions) WithUsername(value string) *SearchOptions {
+	o.Username = &value
+	return o
+}
+
+// GetUsername returns value of field Username
+func (o *SearchOptions) GetUsername() string {
+	if o.Username == nil {
+		var z string
+		return z
+	}
+	return *o.Username
+}
+
+// WithPassword set field Password to given value
+func (o *SearchOptions) WithPassword(value string) *SearchOptions {
+	o.Password = &value
+	return o
+}
+
+// GetPassword returns value of field Password
+func (o *SearchOptions) GetPassword() string {
+	if o.Password == nil {
+		var z string
+		return z
+	}
+	return *o.Password
 }

@@ -1,7 +1,7 @@
 % podman-update 1
 
 ## NAME
-podman\-update - Updates the cgroup configuration of a given container
+podman\-update - Update the cgroup configuration of a given container
 
 ## SYNOPSIS
 **podman update** [*options*] *container*
@@ -11,8 +11,8 @@ podman\-update - Updates the cgroup configuration of a given container
 ## DESCRIPTION
 
 Updates the cgroup configuration of an already existing container. The currently supported options are a subset of the
-podman create/run resource limits options. These new options are non-persistent and only last for the current execution of the container; the configuration will be honored on its next run.
-This means that this command can only be executed on an already running container and the changes made will be erased the next time the container is stopped and restarted, this is to ensure immutability.
+podman create/run resource limits options. These new options are non-persistent and only last for the current execution of the container; the configuration is honored on its next run.
+This means that this command can only be executed on an already running container and the changes made is erased the next time the container is stopped and restarted, this is to ensure immutability.
 This command takes one argument, a container name or ID, alongside the resource flags to modify the cgroup.
 
 ## OPTIONS
@@ -58,17 +58,17 @@ This command takes one argument, a container name or ID, alongside the resource 
 
 ## EXAMPLEs
 
-update a container with a new cpu quota and period
+Update a container with a new cpu quota and period.
 ```
 podman update --cpus=5 myCtr
 ```
 
-update a container with all available options for cgroups v2
+Update a container with all available options for cgroups v2.
 ```
 podman update --cpus 5 --cpuset-cpus 0 --cpu-shares 123 --cpuset-mems 0 --memory 1G --memory-swap 2G --memory-reservation 2G --blkio-weight-device /dev/zero:123 --blkio-weight 123 --device-read-bps /dev/zero:10mb --device-write-bps /dev/zero:10mb --device-read-iops /dev/zero:1000 --device-write-iops /dev/zero:1000 --pids-limit 123 ctrID
 ```
 
-update a container with all available options for cgroups v1
+Update a container with all available options for cgroups v1.
 ```
 podman update --cpus 5 --cpuset-cpus 0 --cpu-shares 123 --cpuset-mems 0 --memory 1G --memory-swap 2G --memory-reservation 2G --memory-swappiness 50 --pids-limit 123 ctrID
 ```

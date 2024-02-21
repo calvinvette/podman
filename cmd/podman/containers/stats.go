@@ -4,16 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	tm "github.com/buger/goterm"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	putils "github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/utils"
 	"github.com/docker/go-units"
 	"github.com/spf13/cobra"
 )
@@ -119,7 +121,9 @@ func stats(cmd *cobra.Command, args []string) error {
 		Latest:   statsOptions.Latest,
 		Stream:   !statsOptions.NoStream,
 		Interval: statsOptions.Interval,
+		All:      statsOptions.All,
 	}
+	args = putils.RemoveSlash(args)
 	statsChan, err := registry.ContainerEngine().ContainerStats(registry.Context(), args, opts)
 	if err != nil {
 		return err
@@ -203,7 +207,7 @@ func (s *containerStats) AVGCPU() string {
 }
 
 func (s *containerStats) Up() string {
-	return (s.UpTime.String())
+	return s.UpTime.String()
 }
 
 func (s *containerStats) MemPerc() string {
@@ -211,7 +215,15 @@ func (s *containerStats) MemPerc() string {
 }
 
 func (s *containerStats) NetIO() string {
-	return combineHumanValues(s.NetInput, s.NetOutput)
+	var netInput uint64
+	var netOutput uint64
+
+	for _, net := range s.Network {
+		netInput += net.RxBytes
+		netOutput += net.TxBytes
+	}
+
+	return combineHumanValues(netInput, netOutput)
 }
 
 func (s *containerStats) BlockIO() string {
@@ -219,7 +231,7 @@ func (s *containerStats) BlockIO() string {
 }
 
 func (s *containerStats) PIDS() string {
-	return fmt.Sprintf("%d", s.PIDs)
+	return strconv.FormatUint(s.PIDs, 10)
 }
 
 func (s *containerStats) MemUsage() string {

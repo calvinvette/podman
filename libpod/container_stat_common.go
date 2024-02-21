@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build !remote && (linux || freebsd)
 
 package libpod
 
@@ -11,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/containers/buildah/copier"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/copy"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/copy"
 )
 
 // statOnHost stats the specified path *on the host*.  It returns the file info
@@ -60,7 +59,7 @@ func (c *Container) stat(containerMountPoint string, containerPath string) (*def
 		}
 		// Not all errors from secureStat map to ErrNotExist, so we
 		// have to look into the error string.  Turning it into an
-		// ENOENT let's the API handlers return the correct status code
+		// ENOENT lets the API handlers return the correct status code
 		// which is crucial for the remote client.
 		if os.IsNotExist(statErr) || strings.Contains(statErr.Error(), "o such file or directory") {
 			statErr = copy.ErrENOENT

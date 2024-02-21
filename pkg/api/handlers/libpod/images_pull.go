@@ -6,16 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/channel"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/channel"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
@@ -28,14 +29,18 @@ func ImagesPull(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
 	query := struct {
-		Reference  string `schema:"reference"`
-		OS         string `schema:"OS"`
-		Arch       string `schema:"Arch"`
-		Variant    string `schema:"Variant"`
-		TLSVerify  bool   `schema:"tlsVerify"`
 		AllTags    bool   `schema:"allTags"`
+		CompatMode bool   `schema:"compatMode"`
 		PullPolicy string `schema:"policy"`
 		Quiet      bool   `schema:"quiet"`
+		Reference  string `schema:"reference"`
+		Retry      uint   `schema:"retry"`
+		RetryDelay string `schema:"retrydelay"`
+		TLSVerify  bool   `schema:"tlsVerify"`
+		// Platform fields below:
+		Arch    string `schema:"Arch"`
+		OS      string `schema:"OS"`
+		Variant string `schema:"Variant"`
 	}{
 		TLSVerify:  true,
 		PullPolicy: "always",
@@ -43,6 +48,11 @@ func ImagesPull(w http.ResponseWriter, r *http.Request) {
 
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
 		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
+		return
+	}
+
+	if query.Quiet && query.CompatMode {
+		utils.InternalServerError(w, errors.New("'quiet' and 'compatMode' cannot be used simultaneously"))
 		return
 	}
 
@@ -88,6 +98,19 @@ func ImagesPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, found := r.URL.Query()["retry"]; found {
+		pullOptions.MaxRetries = &query.Retry
+	}
+
+	if _, found := r.URL.Query()["retrydelay"]; found {
+		duration, err := time.ParseDuration(query.RetryDelay)
+		if err != nil {
+			utils.Error(w, http.StatusBadRequest, err)
+			return
+		}
+		pullOptions.RetryDelay = &duration
+	}
+
 	// Let's keep thing simple when running in quiet mode and pull directly.
 	if query.Quiet {
 		images, err := runtime.LibimageRuntime().Pull(r.Context(), query.Reference, pullPolicy, pullOptions)
@@ -101,6 +124,11 @@ func ImagesPull(w http.ResponseWriter, r *http.Request) {
 			report.ID = image.ID()
 		}
 		utils.WriteResponse(w, http.StatusOK, report)
+		return
+	}
+
+	if query.CompatMode {
+		utils.CompatPull(r.Context(), w, runtime, query.Reference, pullPolicy, pullOptions)
 		return
 	}
 

@@ -1,5 +1,4 @@
 //go:build ignore
-// +build ignore
 
 package main
 
@@ -82,7 +81,7 @@ func main() {
 	}
 
 	// always add reflect
-	imports := []string{"\"reflect\"", "\"github.com/containers/podman/v4/pkg/bindings/internal/util\""}
+	imports := []string{"\"reflect\"", "\"github.com/containers/podman/v5/pkg/bindings/internal/util\""}
 	for _, imp := range f.Imports {
 		imports = append(imports, imp.Path.Value)
 	}

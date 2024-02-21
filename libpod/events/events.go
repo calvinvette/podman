@@ -54,13 +54,6 @@ func NewEvent(status Status) Event {
 	}
 }
 
-// Recycle checks if the event log has reach a limit and if so
-// renames the current log and starts a new one.  The remove bool
-// indicates the old log file should be deleted.
-func (e *Event) Recycle(path string, remove bool) error {
-	return errors.New("not implemented")
-}
-
 // ToJSONString returns the event as a json'ified string
 func (e *Event) ToJSONString() (string, error) {
 	b, err := json.Marshal(e)
@@ -69,6 +62,9 @@ func (e *Event) ToJSONString() (string, error) {
 
 // ToHumanReadable returns human-readable event as a formatted string
 func (e *Event) ToHumanReadable(truncate bool) string {
+	if e == nil {
+		return ""
+	}
 	var humanFormat string
 	id := e.ID
 	if truncate {

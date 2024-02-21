@@ -9,10 +9,10 @@ podman\-volume\-import - Import tarball contents into an existing podman volume
 ## DESCRIPTION
 
 **podman volume import** imports the contents of a tarball into the podman volume's mount point.
-The contents of the volume will be merged with the content of the tarball with the latter taking precedence.
+The contents of the volume is merged with the content of the tarball with the latter taking precedence.
 **podman volume import** can consume piped input when using `-` as source path.
 
-The given volume must already exist and will not be created by podman volume import.
+The given volume must already exist and is not created by podman volume import.
 
 Note: Following command is not supported by podman-remote.
 
@@ -22,14 +22,19 @@ Print usage statement
 
 ## EXAMPLES
 
-```
-$ gunzip -c hello.tar.gz | podman volume import myvol -
-```
+Import named volume content from the specified file.
 ```
 $ podman volume import myvol test.tar
 ```
+
+Import named volume content from stdin.
 ```
-$ podman volume export myvol | podman volume import oldmyvol -
+$ gunzip -c hello.tar.gz | podman volume import myvol -
+```
+
+Export the content from named volume and pipe it into the named volume via stdin.
+```
+$ podman volume export oldmyvol | podman volume import myvol -
 ```
 
 ## SEE ALSO

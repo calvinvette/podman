@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"runtime"
 
-	"github.com/containers/podman/v4/version"
+	"github.com/containers/podman/v5/version"
 	"github.com/sirupsen/logrus"
 )
 
@@ -56,7 +56,9 @@ func (s *APIServer) apiWrapper(h http.HandlerFunc, w http.ResponseWriter, r *htt
 	}
 
 	if buffer {
-		w = newBufferedResponseWriter(w)
+		bw := newBufferedResponseWriter(w)
+		defer bw.b.Flush()
+		w = bw
 	}
 
 	h(w, r)

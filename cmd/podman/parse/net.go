@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
+
+	"github.com/containers/common/libnetwork/etchosts"
+	"github.com/containers/storage/pkg/regexp"
 )
 
 const (
@@ -22,21 +24,24 @@ const (
 
 var (
 	whiteSpaces  = " \t"
-	alphaRegexp  = regexp.MustCompile(`[a-zA-Z]`)
-	domainRegexp = regexp.MustCompile(`^(:?(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]))(:?\.(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])))*)\.?\s*$`)
+	alphaRegexp  = regexp.Delayed(`[a-zA-Z]`)
+	domainRegexp = regexp.Delayed(`^(:?(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9]))(:?\.(:?[a-zA-Z0-9]|(:?[a-zA-Z0-9][a-zA-Z0-9\-]*[a-zA-Z0-9])))*)\.?\s*$`)
 )
 
 // validateExtraHost validates that the specified string is a valid extrahost and returns it.
-// ExtraHost is in the form of name:ip where the ip has to be a valid ip (ipv4 or ipv6).
+// ExtraHost is in the form of name:ip where the ip has to be a valid ip (ipv4 or ipv6) or the special string HostGateway.
 // for add-host flag
 func ValidateExtraHost(val string) (string, error) {
 	// allow for IPv6 addresses in extra hosts by only splitting on first ":"
-	arr := strings.SplitN(val, ":", 2)
-	if len(arr) != 2 || len(arr[0]) == 0 {
+	name, ip, hasIP := strings.Cut(val, ":")
+	if !hasIP || len(name) == 0 {
 		return "", fmt.Errorf("bad format for add-host: %q", val)
 	}
-	if _, err := validateIPAddress(arr[1]); err != nil {
-		return "", fmt.Errorf("invalid IP address in add-host: %q", arr[1])
+	if ip == etchosts.HostGateway {
+		return val, nil
+	}
+	if _, err := validateIPAddress(ip); err != nil {
+		return "", fmt.Errorf("invalid IP address in add-host: %q", ip)
 	}
 	return val, nil
 }
@@ -77,45 +82,37 @@ func GetAllLabels(labelFile, inputLabels []string) (map[string]string, error) {
 		}
 	}
 	for _, label := range inputLabels {
-		split := strings.SplitN(label, "=", 2)
-		if split[0] == "" {
+		key, value, _ := strings.Cut(label, "=")
+		if key == "" {
 			return nil, fmt.Errorf("invalid label format: %q", label)
 		}
-		value := ""
-		if len(split) > 1 {
-			value = split[1]
-		}
-		labels[split[0]] = value
+		labels[key] = value
 	}
 	return labels, nil
 }
 
 func parseEnvOrLabel(env map[string]string, line, configType string) error {
-	data := strings.SplitN(line, "=", 2)
+	key, val, hasVal := strings.Cut(line, "=")
 
 	// catch invalid variables such as "=" or "=A"
-	if data[0] == "" {
+	if key == "" {
 		return fmt.Errorf("invalid environment variable: %q", line)
 	}
 
 	// trim the front of a variable, but nothing else
-	name := strings.TrimLeft(data[0], whiteSpaces)
+	name := strings.TrimLeft(key, whiteSpaces)
 	if strings.ContainsAny(name, whiteSpaces) {
 		return fmt.Errorf("name %q has white spaces, poorly formatted name", name)
 	}
 
-	if len(data) > 1 {
-		env[name] = data[1]
+	if hasVal {
+		env[name] = val
 	} else {
-		if strings.HasSuffix(name, "*") {
-			name = strings.TrimSuffix(name, "*")
+		if name, hasStar := strings.CutSuffix(name, "*"); hasStar {
 			for _, e := range os.Environ() {
-				part := strings.SplitN(e, "=", 2)
-				if len(part) < 2 {
-					continue
-				}
-				if strings.HasPrefix(part[0], name) {
-					env[part[0]] = part[1]
+				envKey, envVal, hasEq := strings.Cut(e, "=")
+				if hasEq && strings.HasPrefix(envKey, name) {
+					env[envKey] = envVal
 				}
 			}
 		} else if configType == ENVType {

@@ -4,7 +4,7 @@
 #
 
 # WORKDIR=/data
-ENV_WORKDIR_IMG=quay.io/libpod/testimage:20200929
+ENV_WORKDIR_IMG=quay.io/libpod/testimage:20240123
 MultiTagName=localhost/test/testformultitag:tag
 
 podman pull $IMAGE &>/dev/null
@@ -30,9 +30,27 @@ podman run --rm -d --replace --name foo $IMAGE sh -c "echo $mytext;sleep 42"
 # Looks like it is missing the required 0 bytes from the message, why?
 t POST "containers/foo/attach?logs=true&stream=false" 200 \
   $'\001\031'$mytext
+
+# check old docker header
+response_headers=$(cat "$WORKDIR/curl.headers.out")
+like "$response_headers" ".*Content-Type: application/vnd\.docker\.raw-stream.*" "vnd.docker.raw-stream docker v1.40"
+# check new vnd.docker.multiplexed-stream header
+t POST "/v1.42/containers/foo/attach?logs=true&stream=false" 200
+response_headers=$(cat "$WORKDIR/curl.headers.out")
+like "$response_headers" ".*Content-Type: application/vnd\.docker\.multiplexed-stream.*" "vnd.docker.multiplexed-stream docker v1.42"
+t POST "/v4.6.0/libpod/containers/foo/attach?logs=true&stream=false" 200
+response_headers=$(cat "$WORKDIR/curl.headers.out")
+like "$response_headers" ".*Content-Type: application/vnd\.docker\.raw-stream.*" "vnd.docker.raw-stream libpod v4.6.0"
+t POST "/v4.7.0/libpod/containers/foo/attach?logs=true&stream=false" 200
+response_headers=$(cat "$WORKDIR/curl.headers.out")
+like "$response_headers" ".*Content-Type: application/vnd\.docker\.multiplexed-stream.*" "vnd.docker.multiplexed-stream libpod v4.7.0"
+
 t POST "containers/foo/kill" 204
 
-podman run -v /tmp:/tmp $IMAGE true
+podman run --replace --name=foo -v /tmp:/tmp $IMAGE true
+# cannot kill non-running container
+t POST "containers/foo/kill" 409
+t POST "libpod/containers/foo/kill" 409
 
 t GET libpod/containers/json 200 length=0
 
@@ -51,7 +69,7 @@ t GET libpod/containers/json?all=true 200 \
   .[0].IsInfra=false
 
 # Test compat API for Network Settings (.Network is N/A when rootless)
-network_expect="Networks=null"
+network_expect="Networks.slirp4netns.NetworkID=slirp4netns"
 if root; then
     network_expect="Networks.podman.NetworkID=podman"
 fi
@@ -113,10 +131,37 @@ if root; then
     podman run --name $CTRNAME -d -m 512m -v /tmp:/tmp $IMAGE top
 
     t GET libpod/containers/$CTRNAME/stats?stream=false 200 \
-    .memory_stats.limit=536870912
+    .memory_stats.limit=536870912 \
+    .Id~[0-9a-f]\\{64\\}
+
+    # Make sure docker compat endpoint shows "id" lowercase
+    t GET containers/$CTRNAME/stats?stream=false 200 \
+    .memory_stats.limit=536870912 \
+    .id~[0-9a-f]\\{64\\}
+
+    t GET containers/$CTRNAME/top?stream=false 200 \
+      .Titles='[
+  "UID",
+  "PID",
+  "PPID",
+  "C",
+  "STIME",
+  "TTY",
+  "TIME",
+  "CMD"
+]'
 
     podman rm -f $CTRNAME
 fi
+
+CTRNAME=test123
+podman run --name $CTRNAME -d $IMAGE top
+t GET libpod/containers/$CTRNAME/top?ps_args=--invalid 500 \
+  .cause~".*unknown gnu long option.*"
+t GET containers/$CTRNAME/top?ps_args=--invalid 500 \
+  .cause~".*unknown gnu long option.*"
+
+podman rm -f $CTRNAME
 
 # Issue #15765: make sure the memory limit is capped
 if root; then
@@ -128,6 +173,10 @@ if root; then
 
     podman rm -f $CTRNAME
 fi
+
+# Container create without existing image should return 404
+t POST libpod/containers/create Image="foo" 404 \
+  .cause="image not known"
 
 # Issue #6799: it should be possible to start a container, even w/o args.
 t POST libpod/containers/create?name=test_noargs Image=${IMAGE} 201 \
@@ -186,12 +235,21 @@ t GET libpod/images/newrepo:v1/json 200 \
 # Commit a new image w/ full parameters
 cparam="repo=newrepo&tag=v2&comment=bar&author=eric"
 cparam="$cparam&format=docker&changes=CMD=/bin/foo"
-t POST "libpod/commit?container=${cid:0:12}&$cparam&pause=true" 200
-t GET libpod/images/newrepo:v2/json 200 \
-  .RepoTags[0]=localhost/newrepo:v2	\
-  .Author=eric \
-  .Comment=bar \
-  .Config.Cmd[-1]="/bin/foo"
+
+if root || have_cgroupsv2; then
+    t POST "libpod/commit?container=${cid:0:12}&$cparam&pause=true" 200
+    t GET libpod/images/newrepo:v2/json 200 \
+      .RepoTags[0]=localhost/newrepo:v2	\
+      .Author=eric \
+      .Comment=bar \
+      .Config.Cmd[-1]="/bin/foo"
+    t DELETE images/localhost/newrepo:v2?force=true 200
+else
+    # cgroupsv1 rootless : pause is not supported in cgroups v1 rootless
+    t POST "libpod/commit?container=${cid:0:12}&$cparam&pause=true" 500 \
+      .cause="this container does not have a cgroup" \
+      .message~".*pause containers on rootless containers with cgroup V1"
+fi
 
 # Create a container for testing the container initializing later
 podman create -t -i --name myctr $IMAGE ls
@@ -232,7 +290,6 @@ t GET containers/myctr/json 200 \
 
 t DELETE images/localhost/newrepo:latest?force=true 200
 t DELETE images/localhost/newrepo:v1?force=true 200
-t DELETE images/localhost/newrepo:v2?force=true 200
 t DELETE libpod/containers/$cid?force=true 200 .[0].Id=$cid
 t DELETE libpod/containers/myctr 200
 t DELETE libpod/containers/bogus 404
@@ -278,6 +335,7 @@ cid_top=$(jq -r '.Id' <<<"$output")
 t GET containers/${cid_top}/json 200 \
   .Config.Entrypoint[0]="top" \
   .Config.Cmd='[]' \
+  .Config.StopTimeout="10" \
   .Path="top" \
   .NetworkSettings.Networks.podman.NetworkID=podman
 t POST  containers/${cid_top}/start 204
@@ -343,6 +401,15 @@ t GET containers/$cid/json 200 \
 
 t DELETE containers/$cid?v=true 204
 
+# Test Volumes with bind mount, for some reason docker-py sets this #18454
+t POST containers/create Image=$IMAGE Volumes='{"/test/":{}}'  HostConfig='{"Binds":["/tmp:/test/:ro"]}'  201 \
+  .Id~[0-9a-f]\\{64\\}
+cid=$(jq -r '.Id' <<<"$output")
+t GET containers/$cid/json 200 \
+  .Mounts[0].Destination="/test/"
+
+t DELETE containers/$cid?v=true 204
+
 # test port mapping
 podman run -d --rm --name bar -p 8080:9090 $IMAGE top
 
@@ -354,6 +421,9 @@ t GET containers/json 200 \
 podman stop bar
 
 #compat api list containers sanity checks
+podman run -d --rm --name labelcontainer_with $ENV_WORKDIR_IMG top
+podman run -d --rm --name labelcontainer_without $IMAGE top
+
 t GET containers/json?filters='garb1age}' 500 \
     .cause="invalid character 'g' looking for beginning of value"
 t GET containers/json?filters='{"label":["testl' 500 \
@@ -381,7 +451,15 @@ t POST containers/prune?filters='{"label":["tes' 500 \
 t POST libpod/containers/prune?filters='{"label":["tes' 500 \
     .cause="unexpected end of JSON input"
 
-t GET libpod/containers/json?filters='{"label":["testlabel"]}' 200 length=0
+t GET libpod/containers/json?filters='{"label":["created_by"]}' 200 \
+  length=1 \
+  .[0].Names[0]="labelcontainer_with"
+t GET libpod/containers/json?filters='{"label!":["created_by"]}' 200 \
+  length=1 \
+  .[0].Names[0]="labelcontainer_without"
+t GET libpod/containers/json?filters='{"label!":["testlabel"]}' 200 length=2
+
+podman stop -t0 labelcontainer_with labelcontainer_without
 
 # libpod api: do not use list filters for prune
 t POST libpod/containers/prune?filters='{"name":["anyname"]}' 500 \
@@ -400,11 +478,29 @@ t POST containers/prune?filters='{"network":["anynetwork"]}' 500 \
     .cause="network is an invalid filter"
 
 # Test CPU limit (NanoCPUs)
-t POST containers/create Image=$IMAGE HostConfig='{"NanoCpus":500000}' 201 \
-  .Id~[0-9a-f]\\{64\\}
+nanoCpu=500000
+if have_cgroupsv2; then
+    t POST containers/create Image=$IMAGE HostConfig='{"NanoCpus":500000}' 201 \
+      .Id~[0-9a-f]\\{64\\}
+else
+    if root; then
+      # cgroupsv1 rootful : NanoCpus needs to set more than 10000000
+      t POST containers/create Image=$IMAGE HostConfig='{"NanoCpus":500000}' 500 \
+        .cause="CPU cfs quota cannot be less than 1ms (i.e. 1000)"
+      t POST containers/create Image=$IMAGE HostConfig='{"NanoCpus":10000000}' 201 \
+        .Id~[0-9a-f]\\{64\\}
+      nanoCpu=10000000
+    else
+      # cgroupsv1 rootless : Resource limits that include NanoCPUs are not supported and ignored
+      t POST containers/create Image=$IMAGE HostConfig='{"NanoCpus":500000}' 201 \
+        .Id~[0-9a-f]\\{64\\}
+      nanoCpu=0
+    fi
+fi
+
 cid=$(jq -r '.Id' <<<"$output")
 t GET containers/$cid/json 200 \
-  .HostConfig.NanoCpus=500000
+  .HostConfig.NanoCpus=$nanoCpu
 
 t DELETE containers/$cid?v=true 204
 
@@ -416,6 +512,24 @@ t GET containers/$cid/json 200 \
   .HostConfig.NetworkMode="bridge"
 
 t DELETE containers/$cid?v=true 204
+
+# test create with default netns="host"
+stop_service
+CONTAINERS_CONF=$TESTS_DIR/containers.host-netns.conf start_service
+
+# check that the default docker netns "default" is rewritten to "host"
+# when the containers.conf explicitly uses "host"
+t POST containers/create Image=$IMAGE HostConfig='{"NetworkMode":"default"}' 201 \
+  .Id~[0-9a-f]\\{64\\}
+cid=$(jq -r '.Id' <<<"$output")
+t GET containers/$cid/json 200 \
+  .HostConfig.NetworkMode="host"
+
+t DELETE containers/$cid?v=true 204
+
+# Restart with the default containers.conf for next tests.
+stop_service
+start_service
 
 # Test Compat Create with healthcheck, check default values
 t POST containers/create Image=$IMAGE Cmd='["top"]' Healthcheck='{"Test":["true"]}' 201 \
@@ -535,11 +649,14 @@ t GET containers/status-test/json 200 .State.Status="created"
 podman start status-test
 t GET containers/status-test/json 200 .State.Status="running"
 
-podman pause status-test
-t GET containers/status-test/json 200 .State.Status="paused"
+# cgroupsv1 rootless : pause and unpause are not supported in cgroups v1 rootless
+if root || have_cgroupsv2; then
+    podman pause status-test
+    t GET containers/status-test/json 200 .State.Status="paused"
 
-podman unpause status-test
-t GET containers/status-test/json 200 .State.Status="running"
+    podman unpause status-test
+    t GET containers/status-test/json 200 .State.Status="running"
+fi
 
 podman stop status-test &
 sleep 1
@@ -570,12 +687,20 @@ if root; then
   echo '{"Memory":{"Limit":500000}, "CPU":{"Shares":123}}' >${TMPD}/update.json
   t POST libpod/containers/updateCtr/update ${TMPD}/update.json 201
 
+  cgroupPath=/sys/fs/cgroup/cpu.weight
+  # 002 is the byte length
+  cpu_weight_expect=$'\001\0025'
+  if ! have_cgroupsv2; then
+    cgroupPath=/sys/fs/cgroup/cpu/cpu.shares
+    # 004 is the byte length
+    cpu_weight_expect=$'\001\004123'
+  fi
+
   # Verify
-  echo '{ "AttachStdout":true,"Cmd":["cat","/sys/fs/cgroup/cpu.weight"]}' >${TMPD}/exec.json
+  echo '{ "AttachStdout":true,"Cmd":["cat", "'$cgroupPath'"]}' >${TMPD}/exec.json
   t POST containers/updateCtr/exec ${TMPD}/exec.json 201 .Id~[0-9a-f]\\{64\\}
   eid=$(jq -r '.Id' <<<"$output")
-  # 002 is the byte length
-  t POST exec/$eid/start 200 $'\001\0025'
+  t POST exec/$eid/start 200 $cpu_weight_expect
 
   podman rm -f updateCtr
 fi
@@ -583,3 +708,14 @@ fi
 rm -rf $TMPD
 
 podman container rm -fa
+
+# 18951: Make sure container create supports the platform parameter.  Force an
+# initial architecture to make sure the test runs on all platforms.
+podman pull --platform=linux/amd64 $IMAGE
+t POST containers/create?platform=linux/amd64 \
+  Image=$IMAGE \
+  201
+t POST containers/create?platform=linux/aarch64 \
+  Image=$IMAGE \
+  404
+podman rmi -f $IMAGE

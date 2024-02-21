@@ -6,27 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman systemd", func() {
-	var (
-		tempdir         string
-		err             error
-		podmanTest      *PodmanTestIntegration
-		systemdUnitFile string
-	)
+
+	var systemdUnitFile string
 
 	BeforeEach(func() {
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
+		podmanCmd := fmt.Sprintf("%s %s", podmanTest.PodmanBinary, strings.Join(podmanTest.MakeOptions(nil, false, false), " "))
 		systemdUnitFile = fmt.Sprintf(`[Unit]
 Description=redis container
 [Service]
@@ -36,71 +27,78 @@ ExecStop=%s stop -t 10 redis
 KillMode=process
 [Install]
 WantedBy=default.target
-`, podmanTest.PodmanBinary, podmanTest.PodmanBinary)
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
+`, podmanCmd, podmanCmd)
 	})
 
 	It("podman start container by systemd", func() {
-		SkipIfRootless("rootless can not write to /etc")
+		SkipIfRemote("cannot create unit file on remote host")
 		SkipIfContainerized("test does not have systemd as pid 1")
 
-		sysFile := os.WriteFile("/etc/systemd/system/redis.service", []byte(systemdUnitFile), 0644)
+		dashWhat := "--system"
+		unitDir := "/run/systemd/system"
+		if isRootless() {
+			dashWhat = "--user"
+			unitDir = fmt.Sprintf("%s/systemd/user", os.Getenv("XDG_RUNTIME_DIR"))
+		}
+		err := os.MkdirAll(unitDir, 0700)
+		Expect(err).ToNot(HaveOccurred())
+
+		serviceName := "redis-" + RandomString(10)
+		sysFilePath := filepath.Join(unitDir, serviceName+".service")
+		sysFile := os.WriteFile(sysFilePath, []byte(systemdUnitFile), 0644)
 		Expect(sysFile).ToNot(HaveOccurred())
 		defer func() {
-			stop := SystemExec("bash", []string{"-c", "systemctl stop redis"})
-			os.Remove("/etc/systemd/system/redis.service")
-			SystemExec("bash", []string{"-c", "systemctl daemon-reload"})
-			Expect(stop).Should(Exit(0))
+			stop := SystemExec("systemctl", []string{dashWhat, "stop", serviceName})
+			os.Remove(sysFilePath)
+			SystemExec("systemctl", []string{dashWhat, "daemon-reload"})
+			Expect(stop).Should(ExitCleanly())
 		}()
 
 		create := podmanTest.Podman([]string{"create", "--name", "redis", REDIS_IMAGE})
 		create.WaitWithDefaultTimeout()
-		Expect(create).Should(Exit(0))
+		Expect(create).Should(ExitCleanly())
 
-		enable := SystemExec("bash", []string{"-c", "systemctl daemon-reload"})
-		Expect(enable).Should(Exit(0))
+		enable := SystemExec("systemctl", []string{dashWhat, "daemon-reload"})
+		Expect(enable).Should(ExitCleanly())
 
-		start := SystemExec("bash", []string{"-c", "systemctl start redis"})
-		Expect(start).Should(Exit(0))
+		start := SystemExec("systemctl", []string{dashWhat, "start", serviceName})
+		Expect(start).Should(ExitCleanly())
 
-		logs := SystemExec("bash", []string{"-c", "journalctl -n 20 -u redis"})
-		Expect(logs).Should(Exit(0))
+		checkAvailableJournald()
+		if !journald.journaldSkip {
+			logs := SystemExec("journalctl", []string{dashWhat, "-n", "20", "-u", serviceName})
+			Expect(logs).Should(ExitCleanly())
+		}
 
-		status := SystemExec("bash", []string{"-c", "systemctl status redis"})
+		status := SystemExec("systemctl", []string{dashWhat, "status", serviceName})
 		Expect(status.OutputToString()).To(ContainSubstring("active (running)"))
 	})
 
 	It("podman run container with systemd PID1", func() {
 		ctrName := "testSystemd"
-		run := podmanTest.Podman([]string{"run", "--name", ctrName, "-t", "-i", "-d", UBI_INIT, "/sbin/init"})
+		run := podmanTest.Podman([]string{"run", "--name", ctrName, "-t", "-i", "-d", SYSTEMD_IMAGE, "/sbin/init"})
 		run.WaitWithDefaultTimeout()
 		Expect(run).Should(Exit(0))
 
 		logs := podmanTest.Podman([]string{"logs", ctrName})
 		logs.WaitWithDefaultTimeout()
-		Expect(logs).Should(Exit(0))
+		Expect(logs).Should(ExitCleanly())
 
 		// Give container 10 seconds to start
-		started := podmanTest.WaitContainerReady(ctrName, "Reached target Multi-User System.", 30, 1)
-		Expect(started).To(BeTrue())
+		started := podmanTest.WaitContainerReady(ctrName, "Reached target multi-user.target - Multi-User System.", 30, 1)
+		Expect(started).To(BeTrue(), "Reached multi-user.target")
 
-		systemctl := podmanTest.Podman([]string{"exec", "-t", "-i", ctrName, "systemctl", "status", "--no-pager"})
+		systemctl := podmanTest.Podman([]string{"exec", ctrName, "systemctl", "status", "--no-pager"})
 		systemctl.WaitWithDefaultTimeout()
-		Expect(systemctl).Should(Exit(0))
+		Expect(systemctl).Should(ExitCleanly())
 		Expect(systemctl.OutputToString()).To(ContainSubstring("State:"))
 
 		result := podmanTest.Podman([]string{"inspect", ctrName})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		conData := result.InspectContainerToJSON()
 		Expect(conData).To(HaveLen(1))
-		Expect(conData[0].Config.SystemdMode).To(BeTrue())
+		Expect(conData[0].Config).To(HaveField("SystemdMode", true))
 
 		// stats not supported w/ CGv1 rootless or containerized
 		if isCgroupsV1() && (isRootless() || isContainerized()) {
@@ -108,26 +106,26 @@ WantedBy=default.target
 		}
 		stats := podmanTest.Podman([]string{"stats", "--no-stream", ctrName})
 		stats.WaitWithDefaultTimeout()
-		Expect(stats).Should(Exit(0))
+		Expect(stats).Should(ExitCleanly())
 
 		cgroupPath := podmanTest.Podman([]string{"inspect", "--format='{{.State.CgroupPath}}'", ctrName})
 		cgroupPath.WaitWithDefaultTimeout()
-		Expect(cgroupPath).Should(Exit(0))
-		Expect(result.OutputToString()).To(Not(ContainSubstring("init.scope")))
+		Expect(cgroupPath).Should(ExitCleanly())
+		Expect(cgroupPath.OutputToString()).To(Not(ContainSubstring("init.scope")))
 	})
 
 	It("podman create container with systemd entrypoint triggers systemd mode", func() {
 		ctrName := "testCtr"
-		run := podmanTest.Podman([]string{"create", "--name", ctrName, "--entrypoint", "/sbin/init", UBI_INIT})
+		run := podmanTest.Podman([]string{"create", "--name", ctrName, "--entrypoint", "/sbin/init", SYSTEMD_IMAGE})
 		run.WaitWithDefaultTimeout()
-		Expect(run).Should(Exit(0))
+		Expect(run).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"inspect", ctrName})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		conData := result.InspectContainerToJSON()
 		Expect(conData).To(HaveLen(1))
-		Expect(conData[0].Config.SystemdMode).To(BeTrue())
+		Expect(conData[0].Config).To(HaveField("SystemdMode", true))
 	})
 
 	It("podman systemd in command triggers systemd mode", func() {
@@ -140,30 +138,30 @@ CMD /usr/lib/systemd/systemd`, ALPINE)
 		Expect(err).ToNot(HaveOccurred())
 		session := podmanTest.Podman([]string{"build", "-t", "systemd", "--file", containerfilePath, podmanTest.TempDir})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		ctrName := "testCtr"
 		run := podmanTest.Podman([]string{"create", "--name", ctrName, "systemd"})
 		run.WaitWithDefaultTimeout()
-		Expect(run).Should(Exit(0))
+		Expect(run).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"inspect", ctrName})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		conData := result.InspectContainerToJSON()
 		Expect(conData).To(HaveLen(1))
-		Expect(conData[0].Config.SystemdMode).To(BeTrue())
+		Expect(conData[0].Config).To(HaveField("SystemdMode", true))
 	})
 
 	It("podman create container with --uidmap and conmon PidFile accessible", func() {
 		ctrName := "testCtrUidMap"
 		run := podmanTest.Podman([]string{"run", "-d", "--uidmap=0:1:1000", "--name", ctrName, ALPINE, "top"})
 		run.WaitWithDefaultTimeout()
-		Expect(run).Should(Exit(0))
+		Expect(run).Should(ExitCleanly())
 
 		session := podmanTest.Podman([]string{"inspect", "--format", "{{.ConmonPidFile}}", ctrName})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		pidFile := strings.TrimSuffix(session.OutputToString(), "\n")
 		_, err := os.ReadFile(pidFile)
@@ -174,20 +172,20 @@ CMD /usr/lib/systemd/systemd`, ALPINE)
 		ctrName := "testCtr"
 		run := podmanTest.Podman([]string{"create", "--name", ctrName, "--systemd", "always", ALPINE})
 		run.WaitWithDefaultTimeout()
-		Expect(run).Should(Exit(0))
+		Expect(run).Should(ExitCleanly())
 
 		result := podmanTest.Podman([]string{"inspect", ctrName})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		conData := result.InspectContainerToJSON()
 		Expect(conData).To(HaveLen(1))
-		Expect(conData[0].Config.SystemdMode).To(BeTrue())
+		Expect(conData[0].Config).To(HaveField("SystemdMode", true))
 	})
 
 	It("podman run --systemd container should NOT mount /run noexec", func() {
 		session := podmanTest.Podman([]string{"run", "--systemd", "always", ALPINE, "sh", "-c", "mount  | grep \"/run \""})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		Expect(session.OutputToString()).To(Not(ContainSubstring("noexec")))
 	})
@@ -195,17 +193,17 @@ CMD /usr/lib/systemd/systemd`, ALPINE)
 	It("podman run --systemd arg is case insensitive", func() {
 		session := podmanTest.Podman([]string{"run", "--rm", "--systemd", "Always", ALPINE, "echo", "test"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).Should(Equal("test"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--systemd", "True", ALPINE, "echo", "test"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).Should(Equal("test"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--systemd", "False", ALPINE, "echo", "test"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).Should(Equal("test"))
 	})
 })

@@ -3,42 +3,22 @@ package integration
 import (
 	"os"
 
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman run cpu", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
 
 	BeforeEach(func() {
 		SkipIfRootlessCgroupsV1("Setting CPU not supported on cgroupv1 for rootless users")
-
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
 
 		if CGROUPSV2 {
 			if err := os.WriteFile("/sys/fs/cgroup/cgroup.subtree_control", []byte("+cpuset"), 0644); err != nil {
 				Skip("cpuset controller not available on the current kernel")
 			}
 		}
-
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
 	})
 
 	It("podman run cpu-period", func() {
@@ -49,7 +29,7 @@ var _ = Describe("Podman run cpu", func() {
 			result = podmanTest.Podman([]string{"run", "--rm", "--cpu-period=5000", ALPINE, "cat", "/sys/fs/cgroup/cpu/cpu.cfs_period_us"})
 		}
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(ContainSubstring("5000"))
 	})
 
@@ -62,7 +42,7 @@ var _ = Describe("Podman run cpu", func() {
 			result = podmanTest.Podman([]string{"run", "--rm", "--cpu-quota=5000", ALPINE, "cat", "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"})
 		}
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(ContainSubstring("5000"))
 	})
 
@@ -70,17 +50,17 @@ var _ = Describe("Podman run cpu", func() {
 		if CGROUPSV2 {
 			result := podmanTest.Podman([]string{"run", "--rm", "--cpu-quota=5000", ALPINE, "sh", "-c", "cat /sys/fs/cgroup/$(sed -e 's|0::||' < /proc/self/cgroup)/cpu.max"})
 			result.WaitWithDefaultTimeout()
-			Expect(result).Should(Exit(0))
+			Expect(result).Should(ExitCleanly())
 			Expect(result.OutputToString()).To(Equal("5000 100000"))
 		} else {
 			result := podmanTest.Podman([]string{"run", "--rm", "--cpus=0.5", ALPINE, "cat", "/sys/fs/cgroup/cpu/cpu.cfs_period_us"})
 			result.WaitWithDefaultTimeout()
-			Expect(result).Should(Exit(0))
+			Expect(result).Should(ExitCleanly())
 			Expect(result.OutputToString()).To(Equal("100000"))
 
 			result = podmanTest.Podman([]string{"run", "--rm", "--cpus=0.5", ALPINE, "cat", "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"})
 			result.WaitWithDefaultTimeout()
-			Expect(result).Should(Exit(0))
+			Expect(result).Should(ExitCleanly())
 			Expect(result.OutputToString()).To(Equal("50000"))
 		}
 	})
@@ -90,12 +70,12 @@ var _ = Describe("Podman run cpu", func() {
 			// [2-262144] is mapped to [1-10000]
 			result := podmanTest.Podman([]string{"run", "--rm", "--cpu-shares=262144", ALPINE, "sh", "-c", "cat /sys/fs/cgroup/$(sed -e 's|0::||' < /proc/self/cgroup)/cpu.weight"})
 			result.WaitWithDefaultTimeout()
-			Expect(result).Should(Exit(0))
+			Expect(result).Should(ExitCleanly())
 			Expect(result.OutputToString()).To(Equal("10000"))
 		} else {
 			result := podmanTest.Podman([]string{"run", "--rm", "-c", "2", ALPINE, "cat", "/sys/fs/cgroup/cpu/cpu.shares"})
 			result.WaitWithDefaultTimeout()
-			Expect(result).Should(Exit(0))
+			Expect(result).Should(ExitCleanly())
 			Expect(result.OutputToString()).To(Equal("2"))
 		}
 	})
@@ -109,7 +89,7 @@ var _ = Describe("Podman run cpu", func() {
 			result = podmanTest.Podman([]string{"run", "--rm", "--cpuset-cpus=0", ALPINE, "cat", "/sys/fs/cgroup/cpuset/cpuset.cpus"})
 		}
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(Equal("0"))
 	})
 
@@ -122,7 +102,7 @@ var _ = Describe("Podman run cpu", func() {
 			result = podmanTest.Podman([]string{"run", "--rm", "--cpuset-mems=0", ALPINE, "cat", "/sys/fs/cgroup/cpuset/cpuset.mems"})
 		}
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 		Expect(result.OutputToString()).To(Equal("0"))
 	})
 

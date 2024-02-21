@@ -72,7 +72,7 @@ load helpers
     # the window for race conditions that led to #9479.
     run_podman run --rm -d $IMAGE sleep infinity
     local cid="$output"
-    run_podman rm -af
+    run_podman rm -af -t0
 
     # Check the OCI runtime directory has removed.
     is "$(ls $OCIDir | grep $cid)" "" "The OCI runtime directory should have been removed"
@@ -113,9 +113,8 @@ load helpers
     is "$output" "" "Should print no output"
 }
 
-@test "podman container rm doesn't affect stopping containers" {
-    local cname=c$(random_string 30)
-    run_podman run -d --name $cname \
+function __run_healthcheck_container() {
+    run_podman run -d --name $1 \
                --health-cmd /bin/false \
                --health-interval 1s \
                --health-retries 2 \
@@ -125,6 +124,11 @@ load helpers
                --health-start-period 0 \
                --stop-signal SIGTERM \
                $IMAGE sleep infinity
+}
+
+@test "podman container rm doesn't affect stopping containers" {
+    local cname=c$(random_string 30)
+    __run_healthcheck_container $cname
     local cid=$output
 
     # We'll use the PID later to confirm that container is not running
@@ -153,6 +157,31 @@ load helpers
     run_podman 1 container exists $cid
 
     assert "$rm_failures" -gt 0 "we want at least one failure from podman-rm"
+
+    if kill -0 $pid; then
+        die "Container $cname process is still running (pid $pid)"
+    fi
+}
+
+@test "podman container rm --force doesn't leave running processes" {
+    local cname=c$(random_string 30)
+    __run_healthcheck_container $cname
+    local cid=$output
+
+    # We'll use the PID later to confirm that container is not running
+    run_podman inspect --format '{{.State.Pid}}' $cname
+    local pid=$output
+
+    for i in {1..10}; do
+        run_podman inspect $cname --format '{{.State.Status}}'
+        if [ "$output" = "stopping" ]; then
+            break
+        fi
+
+        sleep 0.5
+    done
+
+    run_podman rm -f $cname
 
     if kill -0 $pid; then
         die "Container $cname process is still running (pid $pid)"

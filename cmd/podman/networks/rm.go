@@ -6,11 +6,11 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -20,14 +20,14 @@ var (
 	networkrmCommand     = &cobra.Command{
 		Use:               "rm [options] NETWORK [NETWORK...]",
 		Aliases:           []string{"remove"},
-		Short:             "network rm",
+		Short:             "Remove networks",
 		Long:              networkrmDescription,
 		RunE:              networkRm,
 		Example:           `podman network rm podman`,
 		Args:              cobra.MinimumNArgs(1),
 		ValidArgsFunction: common.AutocompleteNetworks,
 	}
-	stopTimeout uint
+	stopTimeout int
 )
 
 var (
@@ -37,7 +37,7 @@ var (
 func networkRmFlags(flags *pflag.FlagSet) {
 	flags.BoolVarP(&networkRmOptions.Force, "force", "f", false, "remove any containers using network")
 	timeFlagName := "time"
-	flags.UintVarP(&stopTimeout, timeFlagName, "t", containerConfig.Engine.StopTimeout, "Seconds to wait for running containers to stop before killing the container")
+	flags.IntVarP(&stopTimeout, timeFlagName, "t", int(containerConfig.Engine.StopTimeout), "Seconds to wait for running containers to stop before killing the container")
 	_ = networkrmCommand.RegisterFlagCompletionFunc(timeFlagName, completion.AutocompleteNone)
 }
 
@@ -59,7 +59,8 @@ func networkRm(cmd *cobra.Command, args []string) error {
 		if !networkRmOptions.Force {
 			return errors.New("--force option must be specified to use the --time option")
 		}
-		networkRmOptions.Timeout = &stopTimeout
+		timeout := uint(stopTimeout)
+		networkRmOptions.Timeout = &timeout
 	}
 	responses, err := registry.ContainerEngine().NetworkRm(registry.Context(), args, networkRmOptions)
 	if err != nil {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
 	"github.com/spf13/cobra"
 )
 
@@ -17,7 +17,7 @@ var (
 	reloadCommand = &cobra.Command{
 		Use:               "reload",
 		Args:              validate.NoArgs,
-		Short:             "reload all volumes from volume plugins",
+		Short:             "Reload all volumes from volume plugins",
 		Long:              reloadDescription,
 		RunE:              reload,
 		ValidArgsFunction: completion.AutocompleteNone,

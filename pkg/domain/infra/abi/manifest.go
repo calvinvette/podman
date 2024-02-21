@@ -18,8 +18,8 @@ import (
 	"github.com/containers/image/v5/transports"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	envLib "github.com/containers/podman/v4/pkg/env"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	envLib "github.com/containers/podman/v5/pkg/env"
 	"github.com/containers/storage"
 	"github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -105,6 +105,10 @@ func (ir *ImageEngine) ManifestInspect(ctx context.Context, name string, opts en
 // inspect a remote manifest list.
 func (ir *ImageEngine) remoteManifestInspect(ctx context.Context, name string, opts entities.ManifestInspectOptions) ([]byte, error) {
 	sys := ir.Libpod.SystemContext()
+
+	if opts.Authfile != "" {
+		sys.AuthFilePath = opts.Authfile
+	}
 
 	sys.DockerInsecureSkipTLSVerify = opts.SkipTLSVerify
 	if opts.SkipTLSVerify == types.OptionalBoolTrue {
@@ -226,11 +230,11 @@ func (ir *ImageEngine) ManifestAdd(ctx context.Context, name string, images []st
 		if len(opts.Annotation) != 0 {
 			annotations := make(map[string]string)
 			for _, annotationSpec := range opts.Annotation {
-				spec := strings.SplitN(annotationSpec, "=", 2)
-				if len(spec) != 2 {
-					return "", fmt.Errorf("no value given for annotation %q", spec[0])
+				key, val, hasVal := strings.Cut(annotationSpec, "=")
+				if !hasVal {
+					return "", fmt.Errorf("no value given for annotation %q", key)
 				}
-				annotations[spec[0]] = spec[1]
+				annotations[key] = val
 			}
 			opts.Annotations = envLib.Join(opts.Annotations, annotations)
 		}
@@ -265,11 +269,11 @@ func (ir *ImageEngine) ManifestAnnotate(ctx context.Context, name, image string,
 	if len(opts.Annotation) != 0 {
 		annotations := make(map[string]string)
 		for _, annotationSpec := range opts.Annotation {
-			spec := strings.SplitN(annotationSpec, "=", 2)
-			if len(spec) != 2 {
-				return "", fmt.Errorf("no value given for annotation %q", spec[0])
+			key, val, hasVal := strings.Cut(annotationSpec, "=")
+			if !hasVal {
+				return "", fmt.Errorf("no value given for annotation %q", key)
 			}
-			annotations[spec[0]] = spec[1]
+			annotations[key] = val
 		}
 		opts.Annotations = envLib.Join(opts.Annotations, annotations)
 	}
@@ -333,12 +337,16 @@ func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination strin
 	pushOptions.ImageListSelection = cp.CopySpecificImages
 	pushOptions.ManifestMIMEType = manifestType
 	pushOptions.RemoveSignatures = opts.RemoveSignatures
+	pushOptions.Signers = opts.Signers
 	pushOptions.SignBy = opts.SignBy
 	pushOptions.SignPassphrase = opts.SignPassphrase
 	pushOptions.SignBySigstorePrivateKeyFile = opts.SignBySigstorePrivateKeyFile
 	pushOptions.SignSigstorePrivateKeyPassphrase = opts.SignSigstorePrivateKeyPassphrase
 	pushOptions.InsecureSkipTLSVerify = opts.SkipTLSVerify
 	pushOptions.Writer = opts.Writer
+	pushOptions.CompressionLevel = opts.CompressionLevel
+	pushOptions.AddCompression = opts.AddCompression
+	pushOptions.ForceCompressionFormat = opts.ForceCompressionFormat
 
 	compressionFormat := opts.CompressionFormat
 	if compressionFormat == "" {
@@ -354,6 +362,13 @@ func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination strin
 			return "", err
 		}
 		pushOptions.CompressionFormat = &algo
+	}
+	if pushOptions.CompressionLevel == nil {
+		config, err := ir.Libpod.GetConfigNoCopy()
+		if err != nil {
+			return "", err
+		}
+		pushOptions.CompressionLevel = config.Engine.CompressionLevel
 	}
 
 	if opts.All {
@@ -376,4 +391,25 @@ func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination strin
 	}
 
 	return manDigest.String(), err
+}
+
+// ManifestListClear clears out all instances from the manifest list
+func (ir *ImageEngine) ManifestListClear(ctx context.Context, name string) (string, error) {
+	manifestList, err := ir.Libpod.LibimageRuntime().LookupManifestList(name)
+	if err != nil {
+		return "", err
+	}
+
+	listContents, err := manifestList.Inspect()
+	if err != nil {
+		return "", err
+	}
+
+	for _, instance := range listContents.Manifests {
+		if err := manifestList.RemoveInstance(instance.Digest); err != nil {
+			return "", err
+		}
+	}
+
+	return manifestList.ID(), nil
 }

@@ -8,18 +8,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgen/generate"
-	"github.com/containers/podman/v4/pkg/specgenutil"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgen/generate"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/gorilla/schema"
+	"github.com/hashicorp/go-multierror"
 	"github.com/sirupsen/logrus"
 )
 
@@ -246,11 +247,25 @@ func PodDelete(w http.ResponseWriter, r *http.Request) {
 		utils.PodNotFound(w, name, err)
 		return
 	}
-	if err := runtime.RemovePod(r.Context(), pod, true, query.Force, query.Timeout); err != nil {
+	ctrs, err := runtime.RemovePod(r.Context(), pod, true, query.Force, query.Timeout)
+	if err != nil {
+		if len(ctrs) > 0 {
+			// We have container errors to send as well.
+			// Since we're just writing an error, and we don't want
+			// special error-handling for just this endpoint: use a
+			// multierror to package up all container errors.
+			var allCtrErrors error
+			for _, ctrErr := range ctrs {
+				allCtrErrors = multierror.Append(allCtrErrors, ctrErr)
+			}
+
+			err = fmt.Errorf("%w. %s", err, allCtrErrors.Error())
+		}
+
 		utils.Error(w, http.StatusInternalServerError, err)
 		return
 	}
-	report := entities.PodRmReport{Id: pod.ID()}
+	report := entities.PodRmReport{Id: pod.ID(), RemovedCtrs: ctrs}
 	utils.WriteResponse(w, http.StatusOK, report)
 }
 
@@ -361,17 +376,12 @@ func PodTop(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
 
-	psArgs := "-ef"
-	if utils.IsLibpodRequest(r) {
-		psArgs = ""
-	}
 	query := struct {
 		Delay  int    `schema:"delay"`
 		PsArgs string `schema:"ps_args"`
 		Stream bool   `schema:"stream"`
 	}{
-		Delay:  5,
-		PsArgs: psArgs,
+		Delay: 5,
 	}
 	if err := decoder.Decode(&query, r.URL.Query()); err != nil {
 		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to parse parameters for %s: %w", r.URL.String(), err))
@@ -413,7 +423,7 @@ loop: // break out of for/select infinite` loop
 
 			if len(output) > 0 {
 				body := handlers.PodTopOKBody{}
-				body.Titles = strings.Split(output[0], "\t")
+				body.Titles = utils.PSTitles(output[0])
 				for i := range body.Titles {
 					body.Titles[i] = strings.TrimSpace(body.Titles[i])
 				}
@@ -546,6 +556,7 @@ func PodStats(w http.ResponseWriter, r *http.Request) {
 	options := entities.PodStatsOptions{All: query.All}
 	if err := entities.ValidatePodStatsOptions(query.NamesOrIDs, &options); err != nil {
 		utils.InternalServerError(w, err)
+		return
 	}
 
 	var flush = func() {}

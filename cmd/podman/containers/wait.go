@@ -7,12 +7,11 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -41,9 +40,8 @@ var (
 )
 
 var (
-	waitOptions    = entities.WaitOptions{}
-	waitConditions []string
-	waitInterval   string
+	waitOptions  = entities.WaitOptions{}
+	waitInterval string
 )
 
 func waitFlags(cmd *cobra.Command) {
@@ -56,7 +54,7 @@ func waitFlags(cmd *cobra.Command) {
 	flags.BoolVarP(&waitOptions.Ignore, "ignore", "", false, "Ignore if a container does not exist")
 
 	conditionFlagName := "condition"
-	flags.StringSliceVar(&waitConditions, conditionFlagName, []string{}, "Condition to wait on")
+	flags.StringSliceVar(&waitOptions.Conditions, conditionFlagName, []string{}, "Condition to wait on")
 	_ = cmd.RegisterFlagCompletionFunc(conditionFlagName, common.AutocompleteWaitCondition)
 }
 
@@ -80,6 +78,7 @@ func wait(cmd *cobra.Command, args []string) error {
 		err  error
 		errs utils.OutputErrors
 	)
+	args = utils.RemoveSlash(args)
 	if waitOptions.Interval, err = time.ParseDuration(waitInterval); err != nil {
 		var err1 error
 		if waitOptions.Interval, err1 = time.ParseDuration(waitInterval + "ms"); err1 != nil {
@@ -92,14 +91,6 @@ func wait(cmd *cobra.Command, args []string) error {
 	}
 	if waitOptions.Latest && len(args) > 0 {
 		return errors.New("--latest and containers cannot be used together")
-	}
-
-	for _, condition := range waitConditions {
-		cond, err := define.StringToContainerStatus(condition)
-		if err != nil {
-			return err
-		}
-		waitOptions.Condition = append(waitOptions.Condition, cond)
 	}
 
 	responses, err := registry.ContainerEngine().ContainerWait(context.Background(), args, waitOptions)

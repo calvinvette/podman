@@ -8,10 +8,10 @@ import (
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +48,7 @@ func init() {
 	flags.BoolVar(&manifestAddOpts.All, "all", false, "add all of the list's images if the image is a list")
 
 	annotationFlagName := "annotation"
-	flags.StringSliceVar(&manifestAddOpts.Annotation, annotationFlagName, nil, "set an `annotation` for the specified image")
+	flags.StringArrayVar(&manifestAddOpts.Annotation, annotationFlagName, nil, "set an `annotation` for the specified image")
 	_ = addCmd.RegisterFlagCompletionFunc(annotationFlagName, completion.AutocompleteNone)
 
 	archFlagName := "arch"
@@ -93,8 +93,10 @@ func init() {
 }
 
 func add(cmd *cobra.Command, args []string) error {
-	if err := auth.CheckAuthFile(manifestAddOpts.Authfile); err != nil {
-		return err
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(manifestAddOpts.Authfile); err != nil {
+			return err
+		}
 	}
 
 	if manifestAddOpts.CredentialsCLI != "" {

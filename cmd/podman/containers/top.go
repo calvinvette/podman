@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -32,7 +32,6 @@ var (
 		Args:              cobra.ArbitraryArgs,
 		ValidArgsFunction: common.AutocompleteTopCmd,
 		Example: `podman top ctrID
-podman top --latest
 podman top ctrID pid seccomp args %C
 podman top ctrID -eo user,pid,comm`,
 	}
@@ -44,7 +43,6 @@ podman top ctrID -eo user,pid,comm`,
 		RunE:              topCommand.RunE,
 		ValidArgsFunction: topCommand.ValidArgsFunction,
 		Example: `podman container top ctrID
-podman container top --latest
 podman container top ctrID pid seccomp args %C
 podman container top ctrID -eo user,pid,comm`,
 	}
@@ -94,7 +92,7 @@ func top(cmd *cobra.Command, args []string) error {
 	if topOptions.Latest {
 		topOptions.Descriptors = args
 	} else {
-		topOptions.NameOrID = args[0]
+		topOptions.NameOrID = strings.TrimPrefix(args[0], "/")
 		topOptions.Descriptors = args[1:]
 	}
 

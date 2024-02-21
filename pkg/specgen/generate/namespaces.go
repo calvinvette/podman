@@ -1,19 +1,20 @@
+//go:build !remote
+
 package generate
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/namespaces"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/namespaces"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/util"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -89,7 +90,7 @@ func GetDefaultNamespaceMode(nsType string, cfg *config.Config, pod *libpod.Pod)
 	case "cgroup":
 		return specgen.ParseCgroupNamespace(cfg.Containers.CgroupNS)
 	case "net":
-		ns, _, _, err := specgen.ParseNetworkFlag(nil, false)
+		ns, _, _, err := specgen.ParseNetworkFlag(nil)
 		return ns, err
 	}
 
@@ -137,7 +138,13 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		if err != nil {
 			return nil, fmt.Errorf("looking up container to share pid namespace with: %w", err)
 		}
-		toReturn = append(toReturn, libpod.WithPIDNSFrom(pidCtr))
+		if rootless.IsRootless() && pidCtr.NamespaceMode(spec.PIDNamespace, pidCtr.ConfigNoCopy().Spec) == host {
+			// Treat this the same as host, the problem is the runtime tries to do a
+			// setns call and this will fail when it is the host ns as rootless user.
+			s.PidNS.NSMode = specgen.Host
+		} else {
+			toReturn = append(toReturn, libpod.WithPIDNSFrom(pidCtr))
+		}
 	}
 
 	// IPC
@@ -159,9 +166,16 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		if ipcCtr.ConfigNoCopy().NoShmShare {
 			return nil, fmt.Errorf("joining IPC of container %s is not allowed: non-shareable IPC (hint: use IpcMode:shareable for the donor container)", ipcCtr.ID())
 		}
-		toReturn = append(toReturn, libpod.WithIPCNSFrom(ipcCtr))
-		if !ipcCtr.ConfigNoCopy().NoShm {
-			toReturn = append(toReturn, libpod.WithShmDir(ipcCtr.ShmDir()))
+		if rootless.IsRootless() && ipcCtr.NamespaceMode(spec.IPCNamespace, ipcCtr.ConfigNoCopy().Spec) == host {
+			// Treat this the same as host, the problem is the runtime tries to do a
+			// setns call and this will fail when it is the host ns as rootless user.
+			s.IpcNS.NSMode = specgen.Host
+			toReturn = append(toReturn, libpod.WithShmDir("/dev/shm"))
+		} else {
+			toReturn = append(toReturn, libpod.WithIPCNSFrom(ipcCtr))
+			if !ipcCtr.ConfigNoCopy().NoShm {
+				toReturn = append(toReturn, libpod.WithShmDir(ipcCtr.ShmDir()))
+			}
 		}
 	case specgen.None:
 		toReturn = append(toReturn, libpod.WithNoShm(true))
@@ -188,15 +202,18 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		if err != nil {
 			return nil, fmt.Errorf("looking up container to share uts namespace with: %w", err)
 		}
-		toReturn = append(toReturn, libpod.WithUTSNSFrom(utsCtr))
+		if rootless.IsRootless() && utsCtr.NamespaceMode(spec.UTSNamespace, utsCtr.ConfigNoCopy().Spec) == host {
+			// Treat this the same as host, the problem is the runtime tries to do a
+			// setns call and this will fail when it is the host ns as rootless user.
+			s.UtsNS.NSMode = specgen.Host
+		} else {
+			toReturn = append(toReturn, libpod.WithUTSNSFrom(utsCtr))
+		}
 	}
 
 	// User
 	switch s.UserNS.NSMode {
 	case specgen.KeepID:
-		if !rootless.IsRootless() {
-			return nil, errors.New("keep-id is only supported in rootless mode")
-		}
 		opts, err := namespaces.UsernsMode(s.UserNS.String()).GetKeepIDOptions()
 		if err != nil {
 			return nil, err
@@ -261,7 +278,13 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		if err != nil {
 			return nil, fmt.Errorf("looking up container to share cgroup namespace with: %w", err)
 		}
-		toReturn = append(toReturn, libpod.WithCgroupNSFrom(cgroupCtr))
+		if rootless.IsRootless() && cgroupCtr.NamespaceMode(spec.CgroupNamespace, cgroupCtr.ConfigNoCopy().Spec) == host {
+			// Treat this the same as host, the problem is the runtime tries to do a
+			// setns call and this will fail when it is the host ns as rootless user.
+			s.CgroupNS.NSMode = specgen.Host
+		} else {
+			toReturn = append(toReturn, libpod.WithCgroupNSFrom(cgroupCtr))
+		}
 	}
 
 	if s.CgroupParent != "" {
@@ -272,11 +295,7 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		toReturn = append(toReturn, libpod.WithCgroupsMode(s.CgroupsMode))
 	}
 
-	postConfigureNetNS := !s.UserNS.IsHost()
-	// when we are rootless we default to slirp4netns
-	if rootless.IsRootless() && (s.NetNS.IsPrivate() || s.NetNS.IsDefault()) {
-		s.NetNS.NSMode = specgen.Slirp
-	}
+	postConfigureNetNS := needPostConfigureNetNS(s)
 
 	switch s.NetNS.NSMode {
 	case specgen.FromPod:
@@ -289,7 +308,13 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		if err != nil {
 			return nil, fmt.Errorf("looking up container to share net namespace with: %w", err)
 		}
-		toReturn = append(toReturn, libpod.WithNetNSFrom(netCtr))
+		if rootless.IsRootless() && netCtr.NamespaceMode(spec.NetworkNamespace, netCtr.ConfigNoCopy().Spec) == host {
+			// Treat this the same as host, the problem is the runtime tries to do a
+			// setns call and this will fail when it is the host ns as rootless user.
+			s.NetNS.NSMode = specgen.Host
+		} else {
+			toReturn = append(toReturn, libpod.WithNetNSFrom(netCtr))
+		}
 	case specgen.Slirp:
 		portMappings, expose, err := createPortMappings(s, imageData)
 		if err != nil {
@@ -342,7 +367,7 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 		toReturn = append(toReturn, libpod.WithNetNS(portMappings, expose, postConfigureNetNS, "bridge", s.Networks))
 	}
 
-	if s.UseImageHosts {
+	if s.UseImageHosts != nil && *s.UseImageHosts {
 		toReturn = append(toReturn, libpod.WithUseImageHosts())
 	} else if len(s.HostAdd) > 0 {
 		toReturn = append(toReturn, libpod.WithHosts(s.HostAdd))
@@ -350,7 +375,7 @@ func namespaceOptions(s *specgen.SpecGenerator, rt *libpod.Runtime, pod *libpod.
 	if len(s.DNSSearch) > 0 {
 		toReturn = append(toReturn, libpod.WithDNSSearch(s.DNSSearch))
 	}
-	if s.UseImageResolvConf {
+	if s.UseImageResolvConf != nil && *s.UseImageResolvConf {
 		toReturn = append(toReturn, libpod.WithUseImageResolvConf())
 	} else if len(s.DNSServers) > 0 {
 		var dnsServers []string

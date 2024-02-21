@@ -1,7 +1,7 @@
 % podman-ps 1
 
 ## NAME
-podman\-ps - Prints out information about containers
+podman\-ps - Print out information about containers
 
 ## SYNOPSIS
 **podman ps** [*options*]
@@ -28,7 +28,7 @@ all the containers information.  By default it lists:
 
 #### **--all**, **-a**
 
-Show all the containers created by Podman, default is only running containers.
+Show all the containers, default is only running containers.
 
 Note: Podman shares containers storage with other tools such as Buildah and CRI-O. In some cases these `external` containers might also exist in the same storage. Use the `--external` option to see these external containers. External containers show the 'storage' status.
 
@@ -45,20 +45,22 @@ Filters with the same key work inclusive with the only exception being
 
 Valid filters are listed below:
 
-| **Filter**      | **Description**                                                                  |
-| --------------- | -------------------------------------------------------------------------------- |
-| id              | [ID] Container's ID (accepts regex)                                              |
-| name            | [Name] Container's name (accepts regex)                                          |
-| label           | [Key] or [Key=Value] Label assigned to a container                               |
-| exited          | [Int] Container's exit code                                                      |
-| status          | [Status] Container's status: 'created', 'exited', 'paused', 'running', 'unknown' |
-| ancestor        | [ImageName] Image or descendant used to create container (accepts regex)         |
-| before          | [ID] or [Name] Containers created before this container                          |
-| since           | [ID] or [Name] Containers created since this container                           |
-| volume          | [VolumeName] or [MountpointDestination] Volume mounted in container              |
-| health          | [Status] healthy or unhealthy                                                    |
-| pod             | [Pod] name or full or partial ID of pod                                          |
-| network         | [Network] name or full ID of network                                             |
+| **Filter** | **Description**                                                                  |
+|------------|----------------------------------------------------------------------------------|
+| id         | [ID] Container's ID (CID prefix match by default; accepts regex)                 |
+| name       | [Name] Container's name (accepts regex)                                          |
+| label      | [Key] or [Key=Value] Label assigned to a container                               |
+| label!     | [Key] or [Key=Value] Label NOT assigned to a container                           |
+| exited     | [Int] Container's exit code                                                      |
+| status     | [Status] Container's status: 'created', 'exited', 'paused', 'running', 'unknown' |
+| ancestor   | [ImageName] Image or descendant used to create container (accepts regex)         |
+| before     | [ID] or [Name] Containers created before this container                          |
+| since      | [ID] or [Name] Containers created since this container                           |
+| volume     | [VolumeName] or [MountpointDestination] Volume mounted in container              |
+| health     | [Status] healthy or unhealthy                                                    |
+| pod        | [Pod] name or full or partial ID of pod                                          |
+| network    | [Network] name or full ID of network                                             |
+| until      | [DateTime] container created before the given duration or time.                  |
 
 
 #### **--format**=*format*
@@ -67,22 +69,36 @@ Pretty-print containers to JSON or using a Go template
 
 Valid placeholders for the Go template are listed below:
 
-| **Placeholder** | **Description**                                  |
-| --------------- | ------------------------------------------------ |
-| .ID             | Container ID                                     |
-| .Image          | Image Name/ID                                    |
-| .ImageID        | Image ID                                         |
-| .Command        | Quoted command used                              |
-| .CreatedAt      | Creation time for container                      |
-| .RunningFor     | Time elapsed since container was started         |
-| .Status         | Status of container                              |
-| .Pod            | Pod the container is associated with             |
-| .Ports          | Exposed ports                                    |
-| .Size           | Size of container                                |
-| .Names          | Name of container                                |
-| .Networks       | Show all networks connected to the container     |
-| .Labels         | All the labels assigned to the container         |
-| .Mounts         | Volumes mounted in the container                 |
+| **Placeholder**    | **Description**                              |
+|--------------------|----------------------------------------------|
+| .AutoRemove        | If true, containers are removed on exit      |
+| .CIDFile           | Container ID File                            |
+| .Command           | Quoted command used                          |
+| .Created ...       | Creation time for container, Y-M-D H:M:S     |
+| .CreatedAt         | Creation time for container (same as above)  |
+| .CreatedHuman      | Creation time, relative                      |
+| .ExitCode          | Container exit code                          |
+| .Exited            | "true" if container has exited               |
+| .ExitedAt          | Time (epoch seconds) that container exited   |
+| .ID                | Container ID                                 |
+| .Image             | Image Name/ID                                |
+| .ImageID           | Image ID                                     |
+| .IsInfra           | "true" if infra container                    |
+| .Label *string*    | Specified label of the container             |
+| .Labels ...        | All the labels assigned to the container     |
+| .Mounts            | Volumes mounted in the container             |
+| .Names             | Name of container                            |
+| .Networks          | Show all networks connected to the container |
+| .Pid               | Process ID on host system                    |
+| .Pod               | Pod the container is associated with (SHA)   |
+| .PodName           | PodName of the container                     |
+| .Ports             | Exposed ports                                |
+| .Restarts          | Display the container restart count          |
+| .RunningFor        | Time elapsed since container was started     |
+| .Size              | Size of container                            |
+| .StartedAt         | Time (epoch seconds) the container started   |
+| .State             | Human-friendly description of ctr state      |
+| .Status            | Status of container                          |
 
 #### **--help**, **-h**
 
@@ -123,13 +139,13 @@ Display the total file size
 #### **--sort**=*created*
 
 Sort by command, created, id, image, names, runningfor, size, or status",
-Note: Choosing size will sort by size of rootFs, not alphabetically like the rest of the options
+Note: Choosing size sorts by size of rootFs, not alphabetically like the rest of the options
 
 #### **--sync**
 
 Force a sync of container state with the OCI runtime.
 In some cases, a container's state in the runtime can become out of sync with Podman's state.
-This will update Podman's state based on what the OCI runtime reports.
+This updates Podman's state based on what the OCI runtime reports.
 Forcibly syncing is much slower, but can resolve inconsistent state issues.
 
 #### **--watch**, **-w**
@@ -138,6 +154,15 @@ Refresh the output with current containers on an interval in seconds.
 
 ## EXAMPLES
 
+List running containers.
+```
+$ podman ps
+CONTAINER ID  IMAGE                            COMMAND    CREATED        STATUS        PORTS                                                   NAMES
+4089df24d4f3  docker.io/library/centos:latest  /bin/bash  2 minutes ago  Up 2 minutes  0.0.0.0:80->8080/tcp, 0.0.0.0:2000-2006->2000-2006/tcp  manyports
+92f58933c28c  docker.io/library/centos:latest  /bin/bash  3 minutes ago  Up 3 minutes  192.168.99.100:1000-1006->1000-1006/tcp                 zen_sanderson
+```
+
+List all containers.
 ```
 $ podman ps -a
 CONTAINER ID   IMAGE         COMMAND         CREATED       STATUS                    PORTS     NAMES
@@ -145,6 +170,7 @@ CONTAINER ID   IMAGE         COMMAND         CREATED       STATUS               
 69ed779d8ef9f  redis:alpine  "redis-server"  25 hours ago  Created                   6379/tcp  k8s_container1_podsandbox1_redhat.test.crio_redhat-test-crio_1
 ```
 
+List all containers including their size. Note: this can take longer since Podman needs to calculate the size from the file system.
 ```
 $ podman ps -a -s
 CONTAINER ID   IMAGE         COMMAND         CREATED       STATUS                    PORTS     NAMES                                                                  SIZE
@@ -152,12 +178,14 @@ CONTAINER ID   IMAGE         COMMAND         CREATED       STATUS               
 69ed779d8ef9f  redis:alpine  "redis-server"  25 hours ago  Created                   6379/tcp  k8s_container1_podsandbox1_redhat.test.crio_redhat-test-crio_1         27.49 MB
 ```
 
+List all containers, running or not, using a custom Go format.
 ```
 $ podman ps -a --format "{{.ID}}  {{.Image}}  {{.Labels}}  {{.Mounts}}"
 02f65160e14ca  redis:alpine  tier=backend  proc,tmpfs,devpts,shm,mqueue,sysfs,cgroup,/var/run/,/var/run/
 69ed779d8ef9f  redis:alpine  batch=no,type=small  proc,tmpfs,devpts,shm,mqueue,sysfs,cgroup,/var/run/,/var/run/
 ```
 
+List all containers and display their namespaces.
 ```
 $ podman ps --ns -a
 CONTAINER ID    NAMES                                                                   PID     CGROUP       IPC          MNT          NET          PIDNS        USER         UTS
@@ -166,6 +194,7 @@ CONTAINER ID    NAMES                                                           
 a31ebbee9cee7   k8s_podsandbox1-redis_podsandbox1_redhat.test.crio_redhat-test-crio_0   29717   4026531835   4026532585   4026532587   4026532508   4026532589   4026531837   4026532588
 ```
 
+List all containers including size sorted by names.
 ```
 $ podman ps -a --size --sort names
 CONTAINER ID   IMAGE         COMMAND         CREATED       STATUS                    PORTS     NAMES
@@ -173,14 +202,7 @@ CONTAINER ID   IMAGE         COMMAND         CREATED       STATUS               
 02f65160e14ca  redis:alpine  "redis-server"  19 hours ago  Exited (-1) 19 hours ago  6379/tcp  k8s_podsandbox1-redis_podsandbox1_redhat.test.crio_redhat-test-crio_0
 ```
 
-```
-$ podman ps
-CONTAINER ID  IMAGE                            COMMAND    CREATED        STATUS            PORTS                                                   NAMES
-4089df24d4f3  docker.io/library/centos:latest  /bin/bash  2 minutes ago  Up 2 minutes ago  0.0.0.0:80->8080/tcp, 0.0.0.0:2000-2006->2000-2006/tcp  manyports
-92f58933c28c  docker.io/library/centos:latest  /bin/bash  3 minutes ago  Up 3 minutes ago  192.168.99.100:1000-1006->1000-1006/tcp                 zen_sanderson
-
-```
-
+List all external containers created by tools other than Podman.
 ```
 $ podman ps --external -a
 CONTAINER ID  IMAGE                             COMMAND  CREATED      STATUS  PORTS  NAMES

@@ -7,10 +7,17 @@ load helpers
     run_podman run -d $IMAGE sleep 60
     cid="$output"
 
-    # Run 'stop'. Time how long it takes.
+    # Run 'stop'. Time how long it takes. If local, require a warning.
+    local plusw="+w"
+    if is_remote; then
+        plusw=
+    fi
     t0=$SECONDS
-    run_podman stop $cid
+    run_podman 0$plusw stop $cid
     t1=$SECONDS
+    if [[ -n "$plusw" ]]; then
+        require_warning "StopSignal SIGTERM failed to stop container .*, resorting to SIGKILL"
+    fi
 
     # Confirm that container is stopped. Podman-remote unfortunately
     # cannot tell the difference between "stopped" and "exited", and
@@ -43,8 +50,15 @@ load helpers
     is "${lines[1]}" "c2--Up.*"  "podman ps shows running container (2)"
     is "${lines[2]}" "c3--Up.*"  "podman ps shows running container (3)"
 
-    # Stop -a
-    run_podman stop -a -t 1
+    # Stop -a. Local podman issues a warning, check for it.
+    local plusw="+w"
+    if is_remote; then
+        plusw=
+    fi
+    run_podman 0$plusw stop -a -t 1
+    if [[ -n "$plusw" ]]; then
+        require_warning "StopSignal SIGTERM failed to stop container .*, resorting to SIGKILL"
+    fi
 
     # Now podman ps (without -a) should show nothing.
     run_podman ps --format '{{.Names}}'
@@ -63,13 +77,13 @@ load helpers
     # stop -a must print the IDs
     run_podman run -d $IMAGE top
     ctrID="$output"
-    run_podman stop --all
+    run_podman stop -t0 --all
     is "$output" "$ctrID"
 
     # stop $input must print $input
     cname=$(random_string)
     run_podman run -d --name $cname $IMAGE top
-    run_podman stop $cname
+    run_podman stop -t0 $cname
     is "$output" $cname
 
     run_podman rm -t 0 -f $ctrID $cname
@@ -85,6 +99,13 @@ load helpers
 
     run_podman stop --ignore $name
     is "$output" "" "podman stop nonexistent container, with --ignore"
+
+    nosuchfile=$PODMAN_TMPDIR/no-such-file
+    run_podman 125 stop --cidfile=$nosuchfile
+    is "$output" "Error: reading CIDFile: open $nosuchfile: no such file or directory" "podman stop with missing cidfile, without --ignore"
+
+    run_podman stop --cidfile=$nosuchfile --ignore
+    is "$output" "" "podman stop with missing cidfile, with --ignore"
 }
 
 
@@ -178,8 +199,15 @@ load helpers
 @test "podman stop -t 1 Generate warning" {
     skip_if_remote "warning only happens on server side"
     run_podman run --rm --name stopme -d $IMAGE sleep 100
-    run_podman stop -t 1 stopme
-    is "$output" ".*StopSignal SIGTERM failed to stop container stopme in 1 seconds, resorting to SIGKILL"  "stopping container should print warning"
+
+    local plusw="+w"
+    if is_remote; then
+        plusw=
+    fi
+    run_podman 0$plusw stop -t 1 stopme
+    if [[ -n "$plusw" ]]; then
+        require_warning ".*StopSignal SIGTERM failed to stop container stopme in 1 seconds, resorting to SIGKILL"
+    fi
 }
 
 @test "podman stop --noout" {
@@ -197,7 +225,7 @@ load helpers
 
     run_podman run --rm -d --name rmstop $IMAGE sleep infinity
     local cid="$output"
-    run_podman stop rmstop
+    run_podman stop -t0 rmstop
 
     # Check the OCI runtime directory has removed.
     is "$(ls $OCIDir | grep $cid)" "" "The OCI runtime directory should have been removed"

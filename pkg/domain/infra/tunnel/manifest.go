@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/bindings/manifests"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	envLib "github.com/containers/podman/v4/pkg/env"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/bindings/manifests"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	envLib "github.com/containers/podman/v5/pkg/env"
 )
 
 // ManifestCreate implements manifest create via ImageEngine
@@ -34,7 +34,7 @@ func (ir *ImageEngine) ManifestExists(ctx context.Context, name string) (*entiti
 
 // ManifestInspect returns contents of manifest list with given name
 func (ir *ImageEngine) ManifestInspect(ctx context.Context, name string, opts entities.ManifestInspectOptions) ([]byte, error) {
-	options := new(manifests.InspectOptions)
+	options := new(manifests.InspectOptions).WithAuthfile(opts.Authfile)
 	if s := opts.SkipTLSVerify; s != types.OptionalBoolUndefined {
 		if s == types.OptionalBoolTrue {
 			options.WithSkipTLSVerify(true)
@@ -64,11 +64,11 @@ func (ir *ImageEngine) ManifestAdd(_ context.Context, name string, imageNames []
 	if len(opts.Annotation) != 0 {
 		annotations := make(map[string]string)
 		for _, annotationSpec := range opts.Annotation {
-			spec := strings.SplitN(annotationSpec, "=", 2)
-			if len(spec) != 2 {
-				return "", fmt.Errorf("no value given for annotation %q", spec[0])
+			key, val, hasVal := strings.Cut(annotationSpec, "=")
+			if !hasVal {
+				return "", fmt.Errorf("no value given for annotation %q", key)
 			}
-			annotations[spec[0]] = spec[1]
+			annotations[key] = val
 		}
 		opts.Annotations = envLib.Join(opts.Annotations, annotations)
 	}
@@ -97,11 +97,11 @@ func (ir *ImageEngine) ManifestAnnotate(ctx context.Context, name, images string
 	if len(opts.Annotation) != 0 {
 		annotations := make(map[string]string)
 		for _, annotationSpec := range opts.Annotation {
-			spec := strings.SplitN(annotationSpec, "=", 2)
-			if len(spec) != 2 {
-				return "", fmt.Errorf("no value given for annotation %q", spec[0])
+			key, val, hasVal := strings.Cut(annotationSpec, "=")
+			if !hasVal {
+				return "", fmt.Errorf("no value given for annotation %q", key)
 			}
-			annotations[spec[0]] = spec[1]
+			annotations[key] = val
 		}
 		opts.Annotations = envLib.Join(opts.Annotations, annotations)
 	}
@@ -130,8 +130,12 @@ func (ir *ImageEngine) ManifestRm(ctx context.Context, names []string) (*entitie
 
 // ManifestPush pushes a manifest list or image index to the destination
 func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination string, opts entities.ImagePushOptions) (string, error) {
+	if opts.Signers != nil {
+		return "", fmt.Errorf("forwarding Signers is not supported for remote clients")
+	}
+
 	options := new(images.PushOptions)
-	options.WithUsername(opts.Username).WithPassword(opts.Password).WithAuthfile(opts.Authfile).WithRemoveSignatures(opts.RemoveSignatures).WithAll(opts.All).WithFormat(opts.Format).WithCompressionFormat(opts.CompressionFormat).WithQuiet(opts.Quiet).WithProgressWriter(opts.Writer)
+	options.WithUsername(opts.Username).WithPassword(opts.Password).WithAuthfile(opts.Authfile).WithRemoveSignatures(opts.RemoveSignatures).WithAll(opts.All).WithFormat(opts.Format).WithCompressionFormat(opts.CompressionFormat).WithQuiet(opts.Quiet).WithProgressWriter(opts.Writer).WithAddCompression(opts.AddCompression).WithForceCompressionFormat(opts.ForceCompressionFormat)
 
 	if s := opts.SkipTLSVerify; s != types.OptionalBoolUndefined {
 		if s == types.OptionalBoolTrue {
@@ -142,7 +146,7 @@ func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination strin
 	}
 	digest, err := manifests.Push(ir.ClientCtx, name, destination, options)
 	if err != nil {
-		return "", fmt.Errorf("adding to manifest list %s: %w", name, err)
+		return "", fmt.Errorf("pushing manifest list %s: %w", name, err)
 	}
 
 	if opts.Rm {
@@ -152,4 +156,20 @@ func (ir *ImageEngine) ManifestPush(ctx context.Context, name, destination strin
 	}
 
 	return digest, err
+}
+
+// ManifestListClear clears out all instances from a manifest list
+func (ir *ImageEngine) ManifestListClear(ctx context.Context, name string) (string, error) {
+	listContents, err := manifests.InspectListData(ctx, name, &manifests.InspectOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	for _, instance := range listContents.Manifests {
+		if _, err := manifests.Remove(ctx, name, instance.Digest.String(), &manifests.RemoveOptions{}); err != nil {
+			return "", err
+		}
+	}
+
+	return name, nil
 }

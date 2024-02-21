@@ -3,11 +3,14 @@
 load helpers
 load helpers.network
 
+# bats test_tags=distro-integration
 @test "podman run - basic tests" {
     rand=$(random_string 30)
 
     err_no_such_cmd="Error:.*/no/such/command.*[Nn]o such file or directory"
-    err_no_exec_dir="Error:.*exec.*permission denied"
+    # runc: RHEL8 on 2023-07-17: "is a directory".
+    # Everything else (crun; runc on debian): "permission denied"
+    err_no_exec_dir="Error:.*exec.*\\\(permission denied\\\|is a directory\\\)"
 
     tests="
 true              |   0 |
@@ -17,6 +20,8 @@ echo $rand        |   0 | $rand
 /no/such/command  | 127 | $err_no_such_cmd
 /etc              | 126 | $err_no_exec_dir
 "
+
+    defer-assertion-failures
 
     tests_run=0
     while read cmd expected_rc expected_output; do
@@ -75,8 +80,27 @@ echo $rand        |   0 | $rand
     is "$output" "$content" "container read input from fd 4"
 }
 
+# 'run --preserve-fd' passes a list of additional file descriptors into the container
+@test "podman run --preserve-fd" {
+    skip_if_remote "preserve-fd is meaningless over remote"
+
+    runtime=$(podman_runtime)
+    if [[ $runtime != "crun" ]]; then
+        skip "runtime is $runtime; preserve-fd requires crun"
+    fi
+
+    content=$(random_string 20)
+    echo "$content" > $PODMAN_TMPDIR/tempfile
+
+    # /proc/self/fd will have 0 1 2, possibly 3 & 4, but no 2-digit fds other than 40
+    run_podman run --rm -i --preserve-fd=9,40 $IMAGE sh -c '/bin/ls -C -w999 /proc/self/fd; cat <&9; cat <&40' 9<<<"fd9" 10</dev/null 40<$PODMAN_TMPDIR/tempfile
+    assert "${lines[0]}" !~ [123][0-9] "/proc/self/fd must not contain 10-39"
+    assert "${lines[1]}" = "fd9"       "cat from fd 9"
+    assert "${lines[2]}" = "$content"  "cat from fd 40"
+}
+
 @test "podman run - uidmapping has no /sys/kernel mounts" {
-    skip_if_cgroupsv1 "FIXME: #15025: run --uidmap fails on cgroups v1"
+    skip_if_cgroupsv1 "run --uidmap fails on cgroups v1 (issue 15025, wontfix)"
     skip_if_rootless "cannot umount as rootless"
     skip_if_remote "TODO Fix this for remote case"
 
@@ -174,17 +198,22 @@ echo $rand        |   0 | $rand
     run_podman 1 image exists $NONLOCAL_IMAGE
 
     # Run a container, without --rm; this should block subsequent --rmi
-    run_podman run --name keepme $NONLOCAL_IMAGE /bin/true
+    run_podman run --name /keepme $NONLOCAL_IMAGE /bin/true
     run_podman image exists $NONLOCAL_IMAGE
 
     # Now try running with --rmi : it should succeed, but not remove the image
-    run_podman run --rmi --rm $NONLOCAL_IMAGE /bin/true
+    run_podman 0+w run --rmi --rm $NONLOCAL_IMAGE /bin/true
+    require_warning "image is in use by a container" \
+                    "--rmi should warn that the image was not removed"
     run_podman image exists $NONLOCAL_IMAGE
 
     # Remove the stray container, and run one more time with --rmi.
-    run_podman rm keepme
-    run_podman run --rmi --rm $NONLOCAL_IMAGE /bin/true
+    run_podman rm /keepme
+    run_podman run --rmi $NONLOCAL_IMAGE /bin/true
     run_podman 1 image exists $NONLOCAL_IMAGE
+
+    run_podman 125 run --rmi --rm=false $NONLOCAL_IMAGE /bin/true
+    is "$output" "Error: the --rmi option does not work without --rm" "--rmi should refuse to remove images when --rm=false set by user"
 }
 
 # 'run --conmon-pidfile --cid-file' makes sure we don't regress on these flags.
@@ -222,7 +251,7 @@ echo $rand        |   0 | $rand
        "conmon pidfile (= PID $conmon_pid_from_file) points to conmon process"
 
     # All OK. Kill container.
-    run_podman rm -f $cid
+    run_podman rm -f -t0 $cid
     if [[ -e $cidfile ]]; then
         die "cidfile $cidfile should be removed along with container"
     fi
@@ -294,6 +323,7 @@ echo $rand        |   0 | $rand
 }
 
 # #6829 : add username to /etc/passwd inside container if --userns=keep-id
+# bats test_tags=distro-integration
 @test "podman run : add username to /etc/passwd if --userns=keep-id" {
     skip_if_not_rootless "--userns=keep-id only works in rootless mode"
     # Default: always run as root
@@ -347,7 +377,7 @@ echo $rand        |   0 | $rand
 # #6991 : /etc/passwd is modifiable
 @test "podman run : --userns=keep-id: passwd file is modifiable" {
     skip_if_not_rootless "--userns=keep-id only works in rootless mode"
-    run_podman run -d --userns=keep-id --cap-add=dac_override $IMAGE sh -c 'while ! test -e /tmp/stop; do sleep 0.1; done'
+    run_podman run -d --userns=keep-id --cap-add=dac_override $IMAGE top
     cid="$output"
 
     # Assign a UID that is (a) not in our image /etc/passwd and (b) not
@@ -368,8 +398,7 @@ echo $rand        |   0 | $rand
     is "$output" "newuser3:x:$uid:999:$gecos:/home/newuser3:/bin/sh" \
        "newuser3 added to /etc/passwd in container"
 
-    run_podman exec $cid touch /tmp/stop
-    run_podman wait $cid
+    run_podman rm -f -t0 $cid
 }
 
 # For #7754: json-file was equating to 'none'
@@ -381,6 +410,9 @@ journald  | -
 k8s-file  | y
 json-file | f
 "
+
+    defer-assertion-failures
+
     while read driver do_check; do
         msg=$(random_string 15)
         run_podman run --name myctr --log-driver $driver $IMAGE echo $msg
@@ -473,6 +505,14 @@ json-file | f
     is "$output" "$expect" "podman run with --tz=local, matches host"
 }
 
+@test "podman run --tz with zoneinfo" {
+    # First make sure that zoneinfo is actually in the image otherwise the test is pointless
+    run_podman run --rm $SYSTEMD_IMAGE ls /usr/share/zoneinfo
+
+    run_podman run --rm --tz Europe/Berlin $SYSTEMD_IMAGE readlink /etc/localtime
+    assert "$output" == "../usr/share/zoneinfo/Europe/Berlin" "localtime is linked correctly"
+}
+
 # run with --runtime should preserve the named runtime
 @test "podman run : full path to --runtime is preserved" {
     skip_if_remote "podman-remote does not support --runtime option"
@@ -508,6 +548,37 @@ json-file | f
     run_podman --noout create --name test $IMAGE echo hi
     is "$output" "" "output should be empty"
     run_podman --noout rm test
+    is "$output" "" "output should be empty"
+}
+
+@test "podman --out run should save the container id" {
+    outfile=${PODMAN_TMPDIR}/out-results
+
+    # first we'll need to run something, write its output to a file, and then read its contents.
+    run_podman --out $outfile run -d --name test $IMAGE echo hola
+    is "$output" "" "output should be redirected"
+    run_podman wait test
+
+    # compare the container id against the one in the file
+    run_podman container inspect --format '{{.Id}}' test
+    is "$output" "$(<$outfile)" "container id should match"
+
+    run_podman --out /dev/null rm test
+    is "$output" "" "output should be empty"
+}
+
+@test "podman --out create should save the container id" {
+    outfile=${PODMAN_TMPDIR}/out-results
+
+    # first we'll need to run something, write its output to a file, and then read its contents.
+    run_podman --out $outfile create --name test $IMAGE echo hola
+    is "$output" "" "output should be redirected"
+
+    # compare the container id against the one in the file
+    run_podman container inspect --format '{{.Id}}' test
+    is "$output" "$(<$outfile)" "container id should match"
+
+    run_podman --out /dev/null rm test
     is "$output" "" "output should be empty"
 }
 
@@ -558,19 +629,28 @@ json-file | f
 @test "podman inspect includes image data" {
     randomname=$(random_string 30)
 
-    run_podman inspect $IMAGE --format "{{.ID}} {{.Digest}}"
+    run_podman inspect $IMAGE --format "{{.ID}}"
     expected="$IMAGE $output"
+    run_podman inspect $IMAGE --format "{{.RepoDigests}}"
+    expectedDigests="$output"
 
     run_podman run --name $randomname $IMAGE true
-    run_podman container inspect $randomname --format "{{.ImageName}} {{.Image}} {{.ImageDigest}}"
+    run_podman container inspect $randomname --format "{{.ImageName}} {{.Image}}"
     is "$output" "$expected"
+    run_podman container inspect $randomname --format "{{.ImageDigest}}"
+    assert "$output" =~ "$expectedDigests"
     run_podman rm -f -t0 $randomname
 }
 
 @test "Verify /run/.containerenv exist" {
     # Nonprivileged container: file exists, but must be empty
-    run_podman run --rm $IMAGE stat -c '%s' /run/.containerenv
-    is "$output" "0" "file size of /run/.containerenv, nonprivileged"
+    for opt in "" "--tmpfs=/run" "--tmpfs=/run --init" "--read-only" "--systemd=always"; do
+        run_podman run --rm $opt $IMAGE stat -c '%s' /run/.containerenv
+        is "$output" "0" "/run/.containerenv exists and is empty: podman run ${opt}"
+    done
+
+    run_podman 1 run --rm -v ${PODMAN_TMPDIR}:/run:Z $IMAGE stat -c '%s' /run/.containerenv
+    is "$output" "stat: can't stat '/run/.containerenv': No such file or directory" "do not create .containerenv on bind mounts"
 
     # Prep work: get ID of image; make a cont. name; determine if we're rootless
     run_podman inspect --format '{{.ID}}' $IMAGE
@@ -639,10 +719,10 @@ json-file | f
         run_podman run --name=$randomname --rootfs $romount:O echo "Hello world"
         is "$output" "Hello world"
 
-	run_podman container inspect $randomname --format "{{.ImageDigest}}"
-	is "$output" "" "Empty image digest for --rootfs container"
+        run_podman container inspect $randomname --format "{{.ImageDigest}}"
+        is "$output" "" "Empty image digest for --rootfs container"
 
-	run_podman rm -f -t0 $randomname
+        run_podman rm -f -t0 $randomname
         run_podman image unmount $IMAGE
     fi
 }
@@ -650,6 +730,7 @@ json-file | f
 # https://github.com/containers/podman/issues/9096
 # podman exec may truncate stdout/stderr; actually a bug in conmon:
 # https://github.com/containers/conmon/issues/236
+# bats test_tags=distro-integration
 @test "podman run - does not truncate or hang with big output" {
     # Size, in bytes, to dd and to expect in return
     char_count=700000
@@ -734,6 +815,17 @@ EOF
     user=$(id -un)
     run_podman 1 run --rm $IMAGE grep $user /etc/passwd
     run_podman run --hostuser=$user --rm $IMAGE grep $user /etc/passwd
+
+    # find a user with a uid > 100 that is a valid octal
+    # Issue #19800
+    octal_user=$(awk -F\: '$1!="nobody" && $3>100 && $3~/^[0-7]+$/ {print $1 " " $3; exit}' /etc/passwd)
+    # test only if a valid user was found
+    if test -n "$octal_user"; then
+        read octal_username octal_userid <<< $octal_user
+        run_podman run --user=$octal_username --hostuser=$octal_username --rm $IMAGE id -u
+        is "$output" "$octal_userid"
+    fi
+
     user=$(id -u)
     run_podman run --hostuser=$user --rm $IMAGE grep $user /etc/passwd
     run_podman run --hostuser=$user --user $user --rm $IMAGE grep $user /etc/passwd
@@ -742,7 +834,11 @@ EOF
 }
 
 @test "podman run --device-cgroup-rule tests" {
-    skip_if_rootless "cannot add devices in rootless mode"
+    if is_rootless; then
+        run_podman 125 run --device-cgroup-rule="b 7:* rmw" --rm $IMAGE
+        is "$output" "Error: device cgroup rules are not supported in rootless mode or in a user namespace"
+        return
+    fi
 
     run_podman run --device-cgroup-rule="b 7:* rmw" --rm $IMAGE
     run_podman run --device-cgroup-rule="c 7:* rmw" --rm $IMAGE
@@ -766,8 +862,17 @@ EOF
 
 @test "podman run defaultenv" {
     run_podman run --rm $IMAGE printenv
-    assert "$output" =~ "TERM=xterm" "env includes TERM"
+    assert "$output" !~ "TERM=" "env doesn't include TERM by default"
     assert "$output" =~ "container=podman" "env includes container=podman"
+
+    run_podman 1 run -t=false --rm $IMAGE printenv TERM
+    assert "$output" == "" "env doesn't include TERM"
+
+    run_podman run -t=true --rm $IMAGE printenv TERM    # uses CRLF terminators
+    assert "$output" == $'xterm\r' "env includes default TERM"
+
+    run_podman run -t=false -e TERM=foobar --rm $IMAGE printenv TERM
+    assert "$output" == "foobar" "env includes TERM"
 
     run_podman run --unsetenv=TERM --rm $IMAGE printenv
     assert "$output" =~ "container=podman" "env includes container=podman"
@@ -819,6 +924,9 @@ EOF
     run_podman inspect --format "{{ .HostConfig.LogConfig.Size }}" $cid
     is "$output" "${size}MB"
     run_podman rm -t 0 -f $cid
+
+    # Make sure run_podman tm -t supports -1 option
+    run_podman rm -t -1 -f $cid
 }
 
 @test "podman run --kernel-memory warning" {
@@ -830,7 +938,7 @@ EOF
 
 # rhbz#1902979 : podman run fails to update /etc/hosts when --uidmap is provided
 @test "podman run update /etc/hosts" {
-    skip_if_cgroupsv1 "FIXME: #15025: run --uidmap fails on cgroups v1"
+    skip_if_cgroupsv1 "run --uidmap fails on cgroups v1 (issue 15025, wontfix)"
     HOST=$(random_string 25)
     run_podman run --uidmap 0:10001:10002 --rm --hostname ${HOST} $IMAGE grep ${HOST} /etc/hosts
     is "${lines[0]}" ".*${HOST}.*"
@@ -840,6 +948,35 @@ EOF
     current_oom_score_adj=$(cat /proc/self/oom_score_adj)
     run_podman run --rm $IMAGE cat /proc/self/oom_score_adj
     is "$output" "$current_oom_score_adj" "different oom_score_adj in the container"
+
+    oomscore=$((current_oom_score_adj+1))
+    run_podman run --oom-score-adj=$oomscore --rm $IMAGE cat /proc/self/oom_score_adj
+    is "$output" "$oomscore" "one more then default oomscore"
+
+    skip_if_remote "containersconf needs to be set on server side"
+    oomscore=$((oomscore+1))
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersconf <<EOF
+[containers]
+oom_score_adj=$oomscore
+EOF
+    CONTAINERS_CONF_OVERRIDE=$PODMAN_TMPDIR/containers.conf run_podman run --rm $IMAGE cat /proc/self/oom_score_adj
+    is "$output" "$oomscore" "two more then default oomscore"
+
+    oomscore=$((oomscore+1))
+    CONTAINERS_CONF_OVERRIDE=$PODMAN_TMPDIR/containers.conf run_podman run --oom-score-adj=$oomscore --rm $IMAGE cat /proc/self/oom_score_adj
+    is "$output" "$oomscore" "--oom-score-adj should override containers.conf"
+}
+
+# issue 19829
+@test "rootless podman clamps oom-score-adj if it is lower than the current one" {
+    skip_if_not_rootless
+    skip_if_remote
+    if grep -- -1000 /proc/self/oom_score_adj; then
+        skip "the current oom-score-adj is already -1000"
+    fi
+    run_podman 0+w run --oom-score-adj=-1000 --rm $IMAGE true
+    require_warning "Requested oom_score_adj=.* is lower than the current one, changing to "
 }
 
 # CVE-2022-1227 : podman top joins container mount NS and uses nsenter from image
@@ -928,26 +1065,75 @@ $IMAGE--c_ok" \
     # ('skip' would be nicer in some sense... but could hide a regression.
     # Fedora, RHEL, Debian, Ubuntu, Gentoo, all have /dev/ttyN, so if
     # this ever triggers, it means a real problem we should know about.)
-    assert "$(ls /dev/tty* | grep -vx /dev/tty)" != "" \
+    vt_tty_devices_count=$(find /dev -regex '/dev/tty[0-9].*' | wc -w)
+    assert "$vt_tty_devices_count" != "0" \
            "Expected at least one /dev/ttyN device on host"
 
     # Ok now confirm that without --systemd, podman exposes ttyNN devices
     run_podman run --rm -d --privileged $IMAGE ./pause
     cid="$output"
 
-    run_podman exec $cid sh -c 'ls /dev/tty*'
-    assert "$output" != "/dev/tty" \
+    run_podman exec $cid sh -c "find /dev -regex '/dev/tty[0-9].*' | wc -w"
+    assert "$output" = "$vt_tty_devices_count" \
            "ls /dev/tty* without systemd; should have lots of ttyN devices"
     run_podman stop -t 0 $cid
 
     # Actual test for 15895: with --systemd, no ttyN devices are passed through
-    run_podman run --rm -d --privileged --systemd=always $IMAGE ./pause
+    run_podman run -d --privileged --systemd=always $IMAGE top
     cid="$output"
 
-    run_podman exec $cid sh -c 'ls /dev/tty*'
-    assert "$output" = "/dev/tty" \
-           "ls /dev/tty* with --systemd=always: should have no ttyN devices"
+    run_podman exec $cid sh -c "find /dev -regex '/dev/tty[0-9].*' | wc -w"
+    assert "$output" = "0" \
+           "ls /dev/tty[0-9] with --systemd=always: should have no ttyN devices"
 
+    # Make sure run_podman stop supports -1 option
+    # FIXME: do we really really mean to say FFFFFFFFFFFFFFFF here???
+    run_podman 0+w stop -t -1 $cid
+    if ! is_remote; then
+        require_warning "StopSignal \(37\) failed to stop container .* in 18446744073709551615 seconds, resorting to SIGKILL" \
+                        "stop -t -1 (negative 1) issues warning"
+    fi
+    run_podman rm -t -1 -f $cid
+}
+
+@test "podman run --privileged as rootless will not mount /dev/tty\d+" {
+    skip_if_not_rootless "this test as rootless"
+
+    # First, confirm that we _have_ /dev/ttyNN devices on the host.
+    # ('skip' would be nicer in some sense... but could hide a regression.
+    # Fedora, RHEL, Debian, Ubuntu, Gentoo, all have /dev/ttyN, so if
+    # this ever triggers, it means a real problem we should know about.)
+    vt_tty_devices_count=$(find /dev -regex '/dev/tty[0-9].*' | wc -w)
+    assert "$vt_tty_devices_count" != "0" \
+           "Expected at least one /dev/ttyN device on host"
+
+    run_podman run --rm -d --privileged $IMAGE ./pause
+    cid="$output"
+
+    run_podman exec $cid sh -c "find /dev -regex '/dev/tty[0-9].*' | wc -w"
+    assert "$output" = "0" \
+           "ls /dev/tty[0-9]: should have no ttyN devices"
+
+    run_podman stop -t 0 $cid
+}
+
+# 16925: --privileged + --systemd = share non-virtual-terminal TTYs (both rootful and rootless)
+@test "podman run --privileged as root with systemd mounts non-vt /dev/tty devices" {
+    # First, confirm that we _have_ non-virtual terminal /dev/tty* devices on
+    # the host.
+    non_vt_tty_devices_count=$(find /dev -regex '/dev/tty[^0-9].*' | wc -w)
+    if [ "$non_vt_tty_devices_count" -eq 0 ]; then
+        skip "The server does not have non-vt TTY devices"
+    fi
+
+    # Verify that all the non-vt TTY devices got mounted in the container
+    run_podman run --rm -d --privileged --systemd=always $IMAGE ./pause
+    cid="$output"
+    run_podman '?' exec $cid find /dev -regex '/dev/tty[^0-9].*'
+    assert "$status" = 0 \
+           "No non-virtual-terminal TTY devices got mounted in the container"
+    assert "$(echo "$output" | wc -w)" = "$non_vt_tty_devices_count" \
+           "Some non-virtual-terminal TTY devices are missing in the container"
     run_podman stop -t 0 $cid
 }
 
@@ -958,10 +1144,319 @@ $IMAGE--c_ok" \
 read_only=true
 EOF
 
-    CONTAINERS_CONF="$containersconf" run_podman 1 run --rm $IMAGE touch /testro
-    CONTAINERS_CONF="$containersconf" run_podman run --rm --read-only=false $IMAGE touch /testrw
-    CONTAINERS_CONF="$containersconf" run_podman run --rm $IMAGE touch /tmp/testrw
-    CONTAINERS_CONF="$containersconf" run_podman 1 run --rm --read-only-tmpfs=false $IMAGE touch /tmp/testro
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman 1 run --rm $IMAGE touch /testro
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm --read-only=false $IMAGE touch /testrw
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm $IMAGE touch /tmp/testrw
+    for dir in /tmp /var/tmp /dev /dev/shm /run; do
+        CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm $IMAGE touch $dir/testro
+        CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm --read-only=false $IMAGE touch $dir/testro
+        CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm --read-only=false --read-only-tmpfs=true $IMAGE touch $dir/testro
+        CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm --read-only-tmpfs=true $IMAGE touch $dir/testro
+
+        CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman 1 run --rm --read-only-tmpfs=false $IMAGE touch $dir/testro
+        assert "$output" =~ "touch: $dir/testro: Read-only file system"
+    done
+}
+
+@test "podman run ulimit from containers.conf" {
+    skip_if_remote "containers.conf has to be set on remote, only tested on E2E test"
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    # Safe minimum: anything under 27 barfs w/ "crun: ... Too many open files"
+    nofile1=$((30 + RANDOM % 10000))
+    nofile2=$((30 + RANDOM % 10000))
+    cat >$containersconf <<EOF
+[containers]
+default_ulimits = [
+  "nofile=${nofile1}:${nofile1}",
+]
+EOF
+
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --rm $IMAGE grep "Max open files" /proc/self/limits
+    assert "$output" =~ " ${nofile1}  * ${nofile1}  * files"
+    CONTAINERS_CONF_OVERRIDE="$containersconf" run_podman run --ulimit nofile=${nofile2}:${nofile2} --rm $IMAGE grep "Max open files" /proc/self/limits
+    assert "$output" =~ " ${nofile2}  * ${nofile2}  * files"
+}
+
+@test "podman run ulimit with -1" {
+    max=unlimited
+    if is_rootless; then
+        run ulimit -c -H
+        max=$output
+        if [[ "$max" != "unlimited" ]] && [[ $max -lt 1000 ]]; then
+            skip "ulimit -c == $max, test requires >= 1000"
+        fi
+    fi
+
+    run_podman run --ulimit core=-1:-1 --rm $IMAGE grep core /proc/self/limits
+    assert "$output" =~ " ${max}  * ${max}  * bytes"
+
+    run_podman run --ulimit core=1000:-1 --rm $IMAGE grep core /proc/self/limits
+    assert "$output" =~ " 1000  * ${max}  * bytes"
+
+    run_podman 125 run --ulimit core=-1:1000 --rm $IMAGE grep core /proc/self/limits
+    is "$output" "Error: ulimit option \"core=-1:1000\" requires name=SOFT:HARD, failed to be parsed: ulimit soft limit must be less than or equal to hard limit: soft: -1 (unlimited), hard: 1000"
+}
+
+@test "podman run bad --name" {
+    randomname=$(random_string 30)
+    run_podman 125 create --name "$randomname/bad" $IMAGE
+    run_podman create --name "/$randomname" $IMAGE
+    run_podman ps -a --filter name="^/$randomname$" --format '{{ .Names }}'
+    is "$output" "$randomname" "Should be able to find container by name"
+    run_podman rm "/$randomname"
+    run_podman 125 create --name "$randomname/" $IMAGE
+}
+
+@test "podman run --net=host --cgroupns=host with read only cgroupfs" {
+    skip_if_rootless_cgroupsv1
+
+    if is_cgroupsv1; then
+        # verify that the memory controller is mounted read-only
+        run_podman run --net=host --cgroupns=host --rm $IMAGE cat /proc/self/mountinfo
+        assert "$output" =~ "/sys/fs/cgroup/memory ro.* cgroup cgroup"
+    else
+        # verify that the last /sys/fs/cgroup mount is read-only
+        run_podman run --net=host --cgroupns=host --rm $IMAGE sh -c "grep ' / /sys/fs/cgroup ' /proc/self/mountinfo | tail -n 1"
+        assert "$output" =~ "/sys/fs/cgroup ro"
+
+        # verify that it works also with a cgroupns
+        run_podman run --net=host --cgroupns=private --rm $IMAGE sh -c "grep ' / /sys/fs/cgroup ' /proc/self/mountinfo | tail -n 1"
+        assert "$output" =~ "/sys/fs/cgroup ro"
+    fi
+}
+
+@test "podman run - rootfs with idmapped mounts" {
+    skip_if_rootless "idmapped mounts work only with root for now"
+
+    skip_if_remote "userns=auto is set on the server"
+
+    grep -E -q "^containers:" /etc/subuid || skip "no IDs allocated for user 'containers'"
+
+    # check if the underlying file system supports idmapped mounts
+    check_dir=$PODMAN_TMPDIR/idmap-check
+    mkdir $check_dir
+    run_podman '?' run --rm --uidmap=0:1000:10000 --rootfs $check_dir:idmap true
+    if [[ "$output" == *"failed to create idmapped mount: invalid argument"* ]]; then
+        skip "idmapped mounts not supported"
+    fi
+
+    run_podman image mount $IMAGE
+    src="$output"
+
+    # we cannot use idmap on top of overlay, so we need a copy
+    romount=$PODMAN_TMPDIR/rootfs
+    cp -ar "$src" "$romount"
+
+    run_podman image unmount $IMAGE
+
+    run_podman run --rm --uidmap=0:1000:10000 --rootfs $romount:idmap stat -c %u:%g /bin
+    is "$output" "0:0"
+
+    run_podman run --uidmap=0:1000:10000 --rm --rootfs "$romount:idmap=uids=0-1001-10000;gids=0-1002-10000" stat -c %u:%g /bin
+    is "$output" "1:2"
+
+    touch $romount/testfile
+    chown 2000:2000 $romount/testfile
+    run_podman run --uidmap=0:1000:2 --rm --rootfs "$romount:idmap=uids=@2000-1-1;gids=@2000-1-1" stat -c %u:%g /testfile
+    is "$output" "1:1"
+
+    rm -rf $romount
+}
+
+@test "podman run --restart=always -- wait" {
+    # regression test for #18572 to make sure Podman waits less than 20 seconds
+    ctr=$(random_string)
+    run_podman run -d --restart=always --name=$ctr $IMAGE false
+    PODMAN_TIMEOUT=20 run_podman wait $ctr
+    is "$output" "1" "container should exit 1"
+    run_podman rm -f -t0 $ctr
+}
+
+@test "podman run - custom static_dir" {
+    # regression test for #19938 to make sure the cleanup process uses the same
+    # static_dir and writes the exit code.  If not, podman-run will run into
+    # it's 20 sec timeout waiting for the exit code to be written.
+
+    skip_if_remote "CONTAINERS_CONF_OVERRIDE redirect does not work on remote"
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    static_dir=$PODMAN_TMPDIR/static_dir
+cat >$containersconf <<EOF
+[engine]
+static_dir="$static_dir"
+EOF
+    ctr=$(random_string)
+    CONTAINERS_CONF_OVERRIDE=$containersconf PODMAN_TIMEOUT=20 run_podman run --name=$ctr $IMAGE true
+    CONTAINERS_CONF_OVERRIDE=$containersconf PODMAN_TIMEOUT=20 run_podman inspect --format "{{.ID}}" $ctr
+    cid="$output"
+    # Since the container has been run with custom static_dir (where the libpod
+    # DB is stored), the default podman should not see it.
+    run_podman 1 container exists $ctr
+    run_podman 1 container exists $cid
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman rm -f -t0 $ctr
+}
+
+@test "podman --authfile=nonexistent-path" {
+    # List of commands to be tested. These all share a common authfile check.
+    #
+    # Table format is:
+    #   podman command | arguments | '-' if it does not work with podman-remote
+    echo "from $IMAGE" > $PODMAN_TMPDIR/Containerfile
+    tests="
+auto-update          |                  | -
+build                | $PODMAN_TMPDIR   |
+container runlabel   | run $IMAGE       | -
+create               | $IMAGE argument  |
+image sign           | $IMAGE           | -
+kube play            | argument         |
+logout               | $IMAGE           |
+manifest add         | $IMAGE argument  |
+manifest inspect     | $IMAGE           |
+manifest push        | $IMAGE argument  |
+pull                 | $IMAGE argument  |
+push                 | $IMAGE argument  |
+run                  | $IMAGE false     |
+search               | $IMAGE           |
+"
+
+    bogus=$PODMAN_TMPDIR/bogus-authfile
+    touch $PODMAN_TMPDIR/Containerfile
+
+    defer-assertion-failures
+
+    while read command args local_only;do
+        # skip commands that don't work in podman-remote
+        if [[ "$local_only" = "-" ]]; then
+            if is_remote; then
+                continue
+            fi
+        fi
+
+        # parse_table gives us '' (two single quotes) for empty columns
+        if [[ "$args" = "''" ]]; then args=;fi
+
+        run_podman 125 $command --authfile=$bogus $args
+        assert "$output" = "Error: credential file is not accessible: stat $bogus: no such file or directory" \
+           "$command --authfile=nonexistent-path"
+
+        if [[ "$command" != "logout" ]]; then
+           REGISTRY_AUTH_FILE=$bogus run_podman ? $command $args
+           assert "$output" !~ "credential file is not accessible" \
+              "$command REGISTRY_AUTH_FILE=nonexistent-path"
+        fi
+    done < <(parse_table "$tests")
+}
+
+@test "podman --syslog and environment passed to conmon" {
+    skip_if_remote "--syslog is not supported for remote clients"
+    skip_if_journald_unavailable
+
+    run_podman run -d -q --syslog $IMAGE sleep infinity
+    cid="$output"
+
+    run_podman container inspect $cid --format "{{ .State.ConmonPid }}"
+    conmon_pid="$output"
+    is "$(< /proc/$conmon_pid/cmdline)" ".*--exit-command-arg--syslog.*" "conmon's exit-command has --syslog set"
+    conmon_env="$(< /proc/$conmon_pid/environ)"
+    assert "$conmon_env" =~ "BATS_TEST_TMPDIR" "entire env is passed down to conmon (incl. BATS variables)"
+    assert "$conmon_env" !~ "NOTIFY_SOCKET=" "NOTIFY_SOCKET is not included (incl. BATS variables)"
+    if ! is_rootless; then
+        assert "$conmon_env" !~ "DBUS_SESSION_BUS_ADDRESS=" "DBUS_SESSION_BUS_ADDRESS is not included (incl. BATS variables)"
+    fi
+
+    run_podman rm -f -t0 $cid
+}
+
+@test "podman create container with conflicting name" {
+    local cname="$(random_string 10 | tr A-Z a-z)"
+    local output_msg_ext="^Error: .*: the container name \"$cname\" is already in use by .* You have to remove that container to be able to reuse that name: that name is already in use by an external entity, or use --replace to instruct Podman to do so."
+    local output_msg="^Error: .*: the container name \"$cname\" is already in use by .* You have to remove that container to be able to reuse that name: that name is already in use, or use --replace to instruct Podman to do so."
+    if is_remote; then
+        output_msg_ext="^Error: .*: the container name \"$cname\" is already in use by .* You have to remove that container to be able to reuse that name: that name is already in use by an external entity"
+        output_msg="^Error: .*: the container name \"$cname\" is already in use by .* You have to remove that container to be able to reuse that name: that name is already in use"
+    fi
+
+    # external container
+    buildah from --name $cname scratch
+
+    run_podman 125 create --name $cname $IMAGE
+    assert "$output" =~ "$output_msg_ext" "Trying to create two containers with same name"
+
+    run_podman container rm $cname
+
+    run_podman --noout create --name $cname $IMAGE
+
+    run_podman 125 create --name $cname $IMAGE
+    assert "$output" =~ "$output_msg" "Trying to create two containers with same name"
+
+    run_podman container rm $cname
+}
+
+# https://issues.redhat.com/browse/RHEL-14469
+@test "podman run - /run must not be world-writable in systemd containers" {
+    run_podman run -d --rm $SYSTEMD_IMAGE /usr/sbin/init
+    cid=$output
+
+    # runc has always been 755; crun < 1.11 was 777
+    run_podman exec $cid stat -c '%a' /run
+    assert "$output" = "755" "stat /run"
+
+    run_podman rm -f -t0 $cid
+}
+
+@test "podman run with mounts.conf missing" {
+    skip_if_remote "--default-mounts-file is not supported for remote clients"
+    MOUNTS_CONF=$PODMAN_TMPDIR/mounts.conf
+    run_podman run --rm --default-mounts-file=${MOUNTS_CONF} $IMAGE echo test1
+    assert "$output" = "test1" "No warning messages on missing mounts file"
+
+    touch ${MOUNTS_CONF}
+
+    run_podman run --rm --default-mounts-file=${MOUNTS_CONF} $IMAGE echo test2
+    assert "$output" = "test2" "No warning messages on empty mounts file"
+
+    echo /tmp/bogus > ${MOUNTS_CONF}
+    run_podman run --rm --default-mounts-file=${MOUNTS_CONF} $IMAGE echo test3
+    assert "$output" = "test3" "No warning messages on missing content in mounts file"
+
+    randfile=$(random_string 30)
+    randcontent=$(random_string 30)
+    mkdir -p $PODMAN_TMPDIR/mounts
+    echo $randcontent > $PODMAN_TMPDIR/mounts/$randfile
+    echo $PODMAN_TMPDIR/mounts:/run/secrets > ${MOUNTS_CONF}
+    run_podman run --rm --default-mounts-file=${MOUNTS_CONF} $IMAGE cat /run/secrets/$randfile
+    assert "$output" = "$randcontent" "mounts should appear in container"
+}
+
+@test "podman run - rm pod if container creation failed with -pod new:" {
+    run_podman run -d --name foobar $IMAGE hostname
+    cid=$output
+
+    podname=pod$(random_string)
+    run_podman 125 run --rm --pod "new:$podname" --name foobar $IMAGE hostname
+    is "$output" ".*creating container storage: the container name \"foobar\" is already in use by"
+
+    # pod should've been cleaned up
+    # if container creation failed
+    run_podman 1 pod exists $podname
+
+    run_podman rm $cid
+    run_podman rmi $(pause_image)
+}
+
+@test "podman run - no entrypoint" {
+    run_podman 127 run --rm --rootfs "$PODMAN_TMPDIR"
+
+    # runc and crun emit different diagnostics
+    runtime=$(podman_runtime)
+    case "$runtime" in
+        crun) expect='crun: executable file `` not found in $PATH: No such file or directory: OCI runtime attempted to invoke a command that was not found' ;;
+        runc) expect='runc: runc create failed: unable to start container process: exec: "": executable file not found in $PATH: OCI runtime attempted to invoke a command that was not found' ;;
+        *)    skip "Unknown runtime '$runtime'" ;;
+    esac
+
+    # The '.*' in the error below is for dealing with podman-remote, which
+    # includes "error preparing container <sha> for attach" in output.
+    is "$output" "Error.*: $expect" "podman emits useful diagnostic when no entrypoint is set"
 }
 
 # vim: filetype=sh

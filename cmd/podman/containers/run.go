@@ -1,20 +1,22 @@
 package containers
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/storage/types"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -48,12 +50,8 @@ var (
 )
 
 var (
-	runOpts = entities.ContainerRunOptions{
-		OutputStream: os.Stdout,
-		InputStream:  os.Stdin,
-		ErrorStream:  os.Stderr,
-	}
-	runRmi bool
+	runOpts entities.ContainerRunOptions
+	runRmi  bool
 )
 
 func runFlags(cmd *cobra.Command) {
@@ -66,11 +64,15 @@ func runFlags(cmd *cobra.Command) {
 
 	flags.SetNormalizeFunc(utils.AliasFlags)
 	flags.BoolVar(&runOpts.SigProxy, "sig-proxy", true, "Proxy received signals to the process")
-	flags.BoolVar(&runRmi, "rmi", false, "Remove container image unless used by other containers")
+	flags.BoolVar(&runRmi, "rmi", false, "Remove image unless used by other containers, implies --rm")
 
 	preserveFdsFlagName := "preserve-fds"
-	flags.UintVar(&runOpts.PreserveFDs, "preserve-fds", 0, "Pass a number of additional file descriptors into the container")
+	flags.UintVar(&runOpts.PreserveFDs, preserveFdsFlagName, 0, "Pass a number of additional file descriptors into the container")
 	_ = cmd.RegisterFlagCompletionFunc(preserveFdsFlagName, completion.AutocompleteNone)
+
+	preserveFdFlagName := "preserve-fd"
+	flags.UintSliceVar(&runOpts.PreserveFD, preserveFdFlagName, nil, "Pass a file descriptor into the container")
+	_ = cmd.RegisterFlagCompletionFunc(preserveFdFlagName, completion.AutocompleteNone)
 
 	flags.BoolVarP(&runOpts.Detach, "detach", "d", false, "Run container in background and print container ID")
 
@@ -78,16 +80,12 @@ func runFlags(cmd *cobra.Command) {
 	flags.StringVar(&runOpts.DetachKeys, detachKeysFlagName, containerConfig.DetachKeys(), "Override the key sequence for detaching a container. Format is a single character `[a-Z]` or a comma separated sequence of `ctrl-<value>`, where `<value>` is one of: `a-cf`, `@`, `^`, `[`, `\\`, `]`, `^` or `_`")
 	_ = cmd.RegisterFlagCompletionFunc(detachKeysFlagName, common.AutocompleteDetachKeys)
 
-	gpuFlagName := "gpus"
-	flags.String(gpuFlagName, "", "This is a Docker specific option and is a NOOP")
-	_ = cmd.RegisterFlagCompletionFunc(gpuFlagName, completion.AutocompleteNone)
-	_ = flags.MarkHidden("gpus")
-
 	passwdFlagName := "passwd"
 	flags.BoolVar(&runOpts.Passwd, passwdFlagName, true, "add entries to /etc/passwd and /etc/group")
 
 	if registry.IsRemote() {
-		_ = flags.MarkHidden("preserve-fds")
+		_ = flags.MarkHidden(preserveFdsFlagName)
+		_ = flags.MarkHidden(preserveFdFlagName)
 		_ = flags.MarkHidden("conmon-pidfile")
 		_ = flags.MarkHidden("pidfile")
 	}
@@ -113,13 +111,19 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if runRmi {
+		if cmd.Flags().Changed("rm") && !cliVals.Rm {
+			return errors.New("the --rmi option does not work without --rm")
+		}
+		cliVals.Rm = true
+	}
 	// TODO: Breaking change should be made fatal in next major Release
 	if cliVals.TTY && cliVals.Interactive && !term.IsTerminal(int(os.Stdin.Fd())) {
 		logrus.Warnf("The input device is not a TTY. The --tty and --interactive flags might not work properly")
 	}
 
-	if af := cliVals.Authfile; len(af) > 0 {
-		if _, err := os.Stat(af); err != nil {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(cliVals.Authfile); err != nil {
 			return err
 		}
 	}
@@ -131,6 +135,11 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	for _, fd := range runOpts.PreserveFD {
+		if !rootless.IsFdInherited(int(fd)) {
+			return fmt.Errorf("file descriptor %d is not available - the preserve-fd option requires that file descriptors must be passed", fd)
+		}
+	}
 	for fd := 3; fd < int(3+runOpts.PreserveFDs); fd++ {
 		if !rootless.IsFdInherited(fd) {
 			return fmt.Errorf("file descriptor %d is not available - the preserve-fds option requires that file descriptors must be passed", fd)
@@ -153,6 +162,11 @@ func run(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+
+	// First set the default streams before they get modified by any flags.
+	runOpts.OutputStream = os.Stdout
+	runOpts.InputStream = os.Stdin
+	runOpts.ErrorStream = os.Stderr
 
 	// If -i is not set, clear stdin
 	if !cliVals.Interactive {
@@ -187,6 +201,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	cliVals.PreserveFDs = runOpts.PreserveFDs
+	cliVals.PreserveFD = runOpts.PreserveFD
 	s := specgen.NewSpecGenerator(imageName, cliVals.RootFS)
 	if err := specgenutil.FillOutSpecGen(s, &cliVals, args); err != nil {
 		return err
@@ -208,6 +223,13 @@ func run(cmd *cobra.Command, args []string) error {
 		registry.SetExitCode(report.ExitCode)
 	}
 	if err != nil {
+		// if pod was created as part of run
+		// remove it in case ctr creation fails
+		if err := rmPodIfNecessary(cmd, s); err != nil {
+			if !errors.Is(err, define.ErrNoSuchPod) {
+				logrus.Error(err.Error())
+			}
+		}
 		return err
 	}
 
@@ -217,8 +239,12 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 	if runRmi {
 		_, rmErrors := registry.ImageEngine().Remove(registry.GetContext(), []string{imageName}, entities.ImageRemoveOptions{})
-		if len(rmErrors) > 0 {
-			logrus.Errorf("%s", errorhandling.JoinErrors(rmErrors))
+		for _, err := range rmErrors {
+			// ImageUnknown would be a super-unlikely race
+			if !errors.Is(err, types.ErrImageUnknown) {
+				// Typical case: ErrImageUsedByContainer
+				logrus.Warn(err)
+			}
 		}
 	}
 	if cmd.Flag("gpus").Changed {

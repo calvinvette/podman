@@ -22,10 +22,30 @@ class ContainerTestCase(APITestCase):
         obj = r.json()
         self.assertEqual(len(obj), 1)
 
-    def test_list_filters(self):
+    def test_list_filters_status(self):
         r = requests.get(
             self.podman_url
-            + "/v1.40/containers/json?filters%3D%7B%22status%22%3A%5B%22running%22%5D%7D"
+            + "/v1.40/containers/json?filters=%7B%22status%22%3A%5B%22running%22%5D%7D"
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        payload = r.json()
+        containerAmnt = len(payload)
+        self.assertGreater(containerAmnt, 0)
+
+    def test_list_filters_label(self):
+        r = requests.get(
+            self.podman_url
+            + "/v1.40/containers/json?filters=%7B%22label%22%3A%5B%22nonexistlabel%22%5D%7D"
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        payload = r.json()
+        containerAmnt = len(payload)
+        self.assertEqual(containerAmnt, 0)
+
+    def test_list_filters_label_not(self):
+        r = requests.get(
+            self.podman_url
+            + "/v1.40/containers/json?filters=%7B%22label%21%22%3A%5B%22nonexistlabel%22%5D%7D"
         )
         self.assertEqual(r.status_code, 200, r.text)
         payload = r.json()
@@ -145,6 +165,19 @@ class ContainerTestCase(APITestCase):
             + f"/v1.40/containers/{payload['Id']}/start"
         )
         self.assertEqual(r.status_code, 204, r.text)
+
+        # wait for the log message to appear to avoid flakes on slow systems
+        # with the /attach?logs=true test below
+        for _ in range(5):
+            r = requests.get(
+                self.podman_url
+                + f"/v1.40/containers/{payload['Id']}/logs?stdout=true"
+            )
+            self.assertIn(r.status_code, (101, 200), r.text)
+            if r.content == b"\x01\x00\x00\x00\x00\x00\x00\x07podman\n":
+                break
+
+            time.sleep(1)
 
         r = requests.post(
             self.podman_url

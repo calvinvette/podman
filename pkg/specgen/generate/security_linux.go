@@ -1,3 +1,5 @@
+//go:build !remote
+
 package generate
 
 import (
@@ -8,20 +10,20 @@ import (
 	"github.com/containers/common/pkg/apparmor"
 	"github.com/containers/common/pkg/capabilities"
 	"github.com/containers/common/pkg/config"
-	cutil "github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/exp/slices"
 )
 
 // setLabelOpts sets the label options of the SecurityConfig according to the
 // input.
 func setLabelOpts(s *specgen.SpecGenerator, runtime *libpod.Runtime, pidConfig specgen.Namespace, ipcConfig specgen.Namespace) error {
-	if !runtime.EnableLabeling() || s.Privileged {
+	if !runtime.EnableLabeling() || s.IsPrivileged() {
 		s.SelinuxOpts = label.DisableSecOpt()
 		return nil
 	}
@@ -68,7 +70,7 @@ func setupApparmor(s *specgen.SpecGenerator, rtc *config.Config, g *generate.Gen
 		return nil
 	}
 	// If privileged and caller did not specify apparmor profiles return
-	if s.Privileged && !hasProfile {
+	if s.IsPrivileged() && !hasProfile {
 		return nil
 	}
 	if !hasProfile {
@@ -88,14 +90,14 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 	)
 	// HANDLE CAPABILITIES
 	// NOTE: Must happen before SECCOMP
-	if s.Privileged {
+	if s.IsPrivileged() {
 		g.SetupPrivileged(true)
 		caplist, err = capabilities.BoundingSet()
 		if err != nil {
 			return err
 		}
 	} else {
-		mergedCaps, err := capabilities.MergeCapabilities(rtc.Containers.DefaultCapabilities, s.CapAdd, s.CapDrop)
+		mergedCaps, err := capabilities.MergeCapabilities(rtc.Containers.DefaultCapabilities.Get(), s.CapAdd, s.CapDrop)
 		if err != nil {
 			return err
 		}
@@ -115,17 +117,19 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 
 		privCapsRequired := []string{}
 
-		// If the container image specifies an label with a
+		// If the container image specifies a label with a
 		// capabilities.ContainerImageLabel then split the comma separated list
 		// of capabilities and record them.  This list indicates the only
 		// capabilities, required to run the container.
 		var capsRequiredRequested []string
 		for key, val := range s.Labels {
-			if cutil.StringInSlice(key, capabilities.ContainerImageLabels) {
+			if slices.Contains(capabilities.ContainerImageLabels, key) {
 				capsRequiredRequested = strings.Split(val, ",")
 			}
 		}
-		if !s.Privileged && len(capsRequiredRequested) > 0 {
+		if !s.IsPrivileged() && len(capsRequiredRequested) == 1 && capsRequiredRequested[0] == "" {
+			caplist = []string{}
+		} else if !s.IsPrivileged() && len(capsRequiredRequested) > 0 {
 			// Pass capRequiredRequested in CapAdd field to normalize capabilities names
 			capsRequired, err := capabilities.MergeCapabilities(nil, capsRequiredRequested, nil)
 			if err != nil {
@@ -133,7 +137,7 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 			}
 			// Verify all capRequired are in the capList
 			for _, cap := range capsRequired {
-				if !cutil.StringInSlice(cap, caplist) {
+				if !slices.Contains(caplist, cap) {
 					privCapsRequired = append(privCapsRequired, cap)
 				}
 			}
@@ -188,7 +192,9 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 		}
 	}
 
-	g.SetProcessNoNewPrivileges(s.NoNewPrivileges)
+	if s.NoNewPrivileges != nil {
+		g.SetProcessNoNewPrivileges(*s.NoNewPrivileges)
+	}
 
 	if err := setupApparmor(s, rtc, g); err != nil {
 		return err
@@ -205,11 +211,13 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 
 	// Clear default Seccomp profile from Generator for unconfined containers
 	// and privileged containers which do not specify a seccomp profile.
-	if s.SeccompProfilePath == "unconfined" || (s.Privileged && (s.SeccompProfilePath == "" || s.SeccompProfilePath == config.SeccompOverridePath || s.SeccompProfilePath == config.SeccompDefaultPath)) {
+	if s.SeccompProfilePath == "unconfined" || (s.IsPrivileged() && (s.SeccompProfilePath == "" || s.SeccompProfilePath == config.SeccompOverridePath || s.SeccompProfilePath == config.SeccompDefaultPath)) {
 		configSpec.Linux.Seccomp = nil
 	}
 
-	g.SetRootReadonly(s.ReadOnlyFilesystem)
+	if s.ReadOnlyFilesystem != nil {
+		g.SetRootReadonly(*s.ReadOnlyFilesystem)
+	}
 
 	noUseIPC := s.IpcNS.NSMode == specgen.FromContainer || s.IpcNS.NSMode == specgen.FromPod || s.IpcNS.NSMode == specgen.Host
 	noUseNet := s.NetNS.NSMode == specgen.FromContainer || s.NetNS.NSMode == specgen.FromPod || s.NetNS.NSMode == specgen.Host

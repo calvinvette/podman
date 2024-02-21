@@ -14,7 +14,10 @@ first argument must be the virtual machine name. The optional command to
 execute can then follow. If no command is provided, an interactive session
 with the virtual machine is established.
 
-The exit code from ssh command will be forwarded to the podman machine ssh caller, see [Exit Codes](#Exit-Codes).
+The exit code from ssh command is forwarded to the podman machine ssh caller, see [Exit Codes](#Exit-Codes).
+
+The default machine name is `podman-machine-default`. If a machine name is not specified as an argument,
+then `podman-machine-default` will be SSH'd into.
 
 Rootless only.
 
@@ -59,25 +62,21 @@ the exit codes follow the `chroot` standard, see below:
 
 ## EXAMPLES
 
-To get an interactive session with the default virtual machine:
+To get an interactive session with the default Podman machine:
 
+SSH into the default Podman machine.
 ```
 $ podman machine ssh
 ```
 
-To get an interactive session with a VM called `myvm`:
+Run command inside the default Podman machine via ssh.
 ```
 $ podman machine ssh myvm
 ```
 
-To run a command on the default virtual machine:
+Run command inside the specified Podman machine via ssh.
 ```
-$ podman machine ssh rpm -q podman
-```
-
-To run a command on a VM called `myvm`:
-```
-$ podman machine ssh  myvm rpm -q podman
+$ podman machine ssh myvm rpm -q podman
 ```
 
 ## SEE ALSO

@@ -26,7 +26,7 @@ load helpers.network
     run_podman network create $net3
 
     run_podman network ls --quiet
-    # just check the the order of the created networks is correct
+    # just check that the order of the created networks is correct
     # we cannot do an exact match since developer and CI systems could contain more networks
     is "$output" ".*$net1.*$net2.*$net3.*podman.*" "networks sorted alphabetically"
 
@@ -59,9 +59,9 @@ load helpers.network
     is "$output" "$random_2" "exec cat index2.txt"
 
     # Verify http contents: curl from localhost
-    run curl -s $SERVER/index.txt
+    run curl -s -S $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt"
-    run curl -s $SERVER/index2.txt
+    run curl -s -S $SERVER/index2.txt
     is "$output" "$random_2" "curl 127.0.0.1:/index2.txt"
 
     # Verify http contents: wget from a second container
@@ -82,13 +82,12 @@ load helpers.network
     is "$output" 'Error: failed to find published port "99/tcp"'
 
     # Clean up
-    run_podman stop -t 1 myweb
-    run_podman rm myweb
+    run_podman rm -f -t0 myweb
 }
 
 # Issue #5466 - port-forwarding doesn't work with this option and -d
 @test "podman networking: port with --userns=keep-id for rootless or --uidmap=* for rootful" {
-    skip_if_cgroupsv1 "FIXME: #15025: run --uidmap fails on cgroups v1"
+    skip_if_cgroupsv1 "run --uidmap fails on cgroups v1 (issue 15025, wontfix)"
     for cidr in "" "$(random_rfc1918_subnet).0/24"; do
         myport=$(random_free_port 52000-52999)
         if [[ -z $cidr ]]; then
@@ -168,7 +167,7 @@ load helpers.network
     is "${lines[0]}" "$pod_name" "hostname is the pod hostname"
     is "${lines[1]}" "$pod_name" "/etc/hostname contains correct pod hostname"
 
-    run_podman pod rm $pod_name
+    run_podman pod rm -f -t0 $pod_name
     is "$output" "$pid" "Only ID in output (no extra errors)"
 
     # Clean up
@@ -196,8 +195,18 @@ load helpers.network
 @test "podman run with slirp4ns adds correct dns address to resolv.conf" {
     CIDR="$(random_rfc1918_subnet)"
     run_podman run --rm --network slirp4netns:cidr="${CIDR}.0/24" \
-                $IMAGE grep "${CIDR}" /etc/resolv.conf
-    is "$output"   "nameserver ${CIDR}.3"   "resolv.conf should have slirp4netns cidr+3 as a nameserver"
+                $IMAGE cat /etc/resolv.conf
+    assert "$output" =~ "nameserver ${CIDR}.3" "resolv.conf should have slirp4netns cidr+3 as first nameserver"
+    no_userns_out="$output"
+
+    if is_rootless; then
+    # check the slirp ip also works correct with userns
+        run_podman run --rm --userns keep-id --network slirp4netns:cidr="${CIDR}.0/24" \
+                $IMAGE cat /etc/resolv.conf
+        assert "$output" =~ "nameserver ${CIDR}.3" "resolv.conf should have slirp4netns cidr+3 as first nameserver with userns"
+        assert "$output" == "$no_userns_out" "resolv.conf should look the same for userns"
+    fi
+
 }
 
 @test "podman run with slirp4ns assigns correct ip address container" {
@@ -226,7 +235,7 @@ load helpers.network
        "sdfsdf"
 
     run_podman run -d --network $mynetname -p 127.0.0.1:$myport:$myport \
-	       $IMAGE nc -l -n -v -p $myport
+               $IMAGE nc -l -n -v -p $myport
     cid="$output"
 
     # FIXME: debugging for #11871
@@ -294,7 +303,7 @@ load helpers.network
     mac1="$output"
 
     # Verify http contents: curl from localhost
-    run curl -s $SERVER/index.txt
+    run curl -s -S $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt"
 
     # rootless cannot modify iptables
@@ -360,7 +369,7 @@ load helpers.network
     is "$output" "$mac2" "MAC address changed after podman network reload ($netname2)"
 
     # check that we can still curl
-    run curl -s $SERVER/index.txt
+    run curl -s -S $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt"
 
     # clean up the container
@@ -439,6 +448,7 @@ load helpers.network
 }
 
 # Test for https://github.com/containers/podman/issues/10052
+# bats test_tags=distro-integration
 @test "podman network connect/disconnect with port forwarding" {
     random_1=$(random_string 30)
     HOST_PORT=$(random_free_port)
@@ -461,17 +471,20 @@ load helpers.network
     run_podman run -d --network $netname $IMAGE top
     background_cid=$output
 
+    local hostname=host-$(random_string 10)
     # Run a httpd container on first network with exposed port
     run_podman run -d -p "$HOST_PORT:80" \
+            --hostname $hostname \
             --network $netname \
             -v $INDEX1:/var/www/index.txt:Z \
             -w /var/www \
             $IMAGE /bin/busybox-extras httpd -f -p 80
     cid=$output
 
-    # Verify http contents: curl from localhost
-    run curl --max-time 3 -s $SERVER/index.txt
-    is "$output" "$random_1" "curl 127.0.0.1:/index.txt"
+    # Verify http contents: curl from localhost. This is the first time
+    # connecting, so, allow retries until httpd starts.
+    run curl --retry 2 --retry-connrefused -s $SERVER/index.txt
+    is "$output" "$random_1" "curl $SERVER/index.txt"
 
     run_podman inspect $cid --format "{{(index .NetworkSettings.Networks \"$netname\").IPAddress}}"
     ip="$output"
@@ -480,7 +493,7 @@ load helpers.network
 
     # check network alias for container short id
     run_podman inspect $cid --format "{{(index .NetworkSettings.Networks \"$netname\").Aliases}}"
-    is "$output" "[${cid:0:12}]" "short container id in network aliases"
+    is "$output" "[${cid:0:12} $hostname]" "short container id and hostname in network aliases"
 
     # check /etc/hosts for our entry
     run_podman exec $cid cat /etc/hosts
@@ -493,8 +506,9 @@ load helpers.network
     run_podman exec $cid cat /etc/hosts
     assert "$output" !~ "$ip" "IP ($ip) should no longer be in /etc/hosts"
 
-    # check that we cannot curl (timeout after 3 sec)
-    run curl --max-time 3 -s $SERVER/index.txt
+    # check that we cannot curl (timeout after 3 sec). Fails with inconsistent
+    # curl exit codes, so, just check for nonzero.
+    run curl --max-time 3 -s -S $SERVER/index.txt
     assert $status -ne 0 \
            "curl did not fail, it should have timed out or failed with non zero exit code"
 
@@ -502,7 +516,7 @@ load helpers.network
     is "$output" "" "Output should be empty (no errors)"
 
     # curl should work again
-    run curl --max-time 3 -s $SERVER/index.txt
+    run curl --max-time 3 -s -S $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt should work again"
 
     # check that we have a new ip and mac
@@ -540,17 +554,17 @@ load helpers.network
 
     # check network2 alias for container short id
     run_podman inspect $cid --format "{{(index .NetworkSettings.Networks \"$netname2\").Aliases}}"
-    is "$output" "[${cid:0:12}]" "short container id in network aliases"
+    is "$output" "[${cid:0:12} $hostname]" "short container id and hostname in network2 aliases"
 
     # curl should work
-    run curl --max-time 3 -s $SERVER/index.txt
+    run curl --max-time 3 -s -S $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt should work"
 
     # disconnect the first network
     run_podman network disconnect $netname $cid
 
     # curl should still work
-    run curl --max-time 3 -s $SERVER/index.txt
+    run curl --max-time 3 -s -S $SERVER/index.txt
     is "$output" "$random_1" "curl 127.0.0.1:/index.txt should still work"
 
     # clean up
@@ -614,14 +628,26 @@ load helpers.network
 
         # Verify http contents again: curl from localhost
         # Use retry since it can take a moment until the new container is ready
-        run curl --retry 2 -s $SERVER/index.txt
-        is "$output" "$random_1" "curl 127.0.0.1:/index.txt after auto restart"
+        local curlcmd="curl --retry 2 --retry-connrefused -s $SERVER/index.txt"
+        echo "$_LOG_PROMPT $curlcmd"
+        run $curlcmd
+        echo "$output"
+        assert "$status" == 0 "curl exit status"
+        assert "$output" = "$random_1" "curl $SERVER/index.txt after auto restart"
 
-        run_podman restart $cid
+        run_podman 0+w restart -t1 $cid
+        if ! is_remote; then
+            require_warning "StopSignal SIGTERM failed to stop container .* in 1 seconds, resorting to SIGKILL" \
+                            "podman restart issues warning"
+        fi
+
         # Verify http contents again: curl from localhost
         # Use retry since it can take a moment until the new container is ready
-        run curl --retry 2 -s $SERVER/index.txt
-        is "$output" "$random_1" "curl 127.0.0.1:/index.txt after podman restart"
+        echo "$_LOG_PROMPT $curlcmd"
+        run $curlcmd
+        echo "$output"
+        assert "$status" == 0 "curl exit status"
+        assert "$output" = "$random_1" "curl $SERVER/index.txt after podman restart"
 
         run_podman rm -t 0 -f $cid
     done
@@ -630,8 +656,8 @@ load helpers.network
     run_podman network rm -t 0 -f $netname
 }
 
-@test "podman run CONTAINERS_CONF dns options" {
-    skip_if_remote "CONTAINERS_CONF redirect does not work on remote"
+@test "podman run CONTAINERS_CONF_OVERRIDE dns options" {
+    skip_if_remote "CONTAINERS_CONF_OVERRIDE redirect does not work on remote"
     # Test on the CLI and via containers.conf
     containersconf=$PODMAN_TMPDIR/containers.conf
 
@@ -650,8 +676,8 @@ EOF
     local nl="
 "
 
-    CONTAINERS_CONF=$containersconf run_podman run --rm $IMAGE cat /etc/resolv.conf
-    is "$output" "search example.com$nl.*" "correct search domain"
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman run --rm $IMAGE cat /etc/resolv.conf
+    is "$output" "search example.com.*" "correct search domain"
     is "$output" ".*nameserver 1.1.1.1${nl}nameserver $searchIP${nl}nameserver 1.0.0.1${nl}nameserver 8.8.8.8" "nameserver order is correct"
 
     # create network with dns
@@ -659,27 +685,47 @@ EOF
     local subnet=$(random_rfc1918_subnet)
     run_podman network create --subnet "$subnet.0/24"  $netname
     # custom server overwrites the network dns server
-    CONTAINERS_CONF=$containersconf run_podman run --network $netname --rm $IMAGE cat /etc/resolv.conf
-    is "$output" "search example.com$nl.*" "correct search domain"
-    is "$output" ".*nameserver 1.1.1.1${nl}nameserver $searchIP${nl}nameserver 1.0.0.1${nl}nameserver 8.8.8.8" "nameserver order is correct"
-
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman run --network $netname --rm $IMAGE cat /etc/resolv.conf
+    is "$output" "search example.com.*" "correct search domain"
+    local store=$output
+    if is_netavark; then
+        assert "$store" == "search example.com${nl}nameserver $subnet.1" "only integrated dns nameserver is set"
+    else
+        assert "$store" == "search example.com
+nameserver 1.1.1.1
+nameserver $searchIP
+nameserver 1.0.0.1
+nameserver 8.8.8.8" "nameserver order is correct"
+    fi
     # we should use the integrated dns server
     run_podman run --network $netname --rm $IMAGE cat /etc/resolv.conf
-    is "$output" "search dns.podman.*" "correct search domain"
-    is "$output" ".*nameserver $subnet.1.*" "integrated dns nameserver is set"
+    assert "$output" =~ "search dns.podman.*" "correct search domain"
+    assert "$output" =~ ".*nameserver $subnet.1.*" \
+           "integrated dns nameserver is set"
 
     # host network should keep localhost nameservers
     if grep 127.0.0. /etc/resolv.conf >/dev/null; then
         run_podman run --network host --rm $IMAGE cat /etc/resolv.conf
-        is "$output" ".*nameserver 127\.0\.0.*" "resolv.conf contains localhost nameserver"
+        assert "$output" =~ ".*nameserver 127\.0\.0.*" \
+               "resolv.conf contains localhost nameserver"
     fi
     # host net + dns still works
     run_podman run --network host --dns 1.1.1.1 --rm $IMAGE cat /etc/resolv.conf
-    is "$output" ".*nameserver 1\.1\.1\.1.*" "resolv.conf contains 1.1.1.1 nameserver"
+    assert "$output" =~ ".*nameserver 1\.1\.1\.1.*" \
+           "resolv.conf contains 1.1.1.1 nameserver"
 }
 
 @test "podman run port forward range" {
-    for netmode in bridge slirp4netns:port_handler=slirp4netns slirp4netns:port_handler=rootlesskit; do
+    # we run a long loop of tests lets run all combinations before bailing out
+    defer-assertion-failures
+
+    # pasta only works rootless
+    local pasta=
+    if is_rootless; then
+        pasta=pasta
+    fi
+
+    for netmode in bridge slirp4netns:port_handler=slirp4netns slirp4netns:port_handler=rootlesskit $pasta; do
         local range=$(random_free_port_range 3)
         # die() inside $(...) does not actually stop us.
         assert "$range" != "" "Could not find free port range"
@@ -692,10 +738,22 @@ EOF
         cid="$output"
         for port in $(seq $port $end_port); do
             run_podman exec -d $cid nc -l -p $port -e /bin/cat
-            # -w 1 adds a 1 second timeout. For some reason, ubuntu's ncat
-            # doesn't close the connection on EOF, and other options to
-            # change this are not portable across distros. -w seems to work.
-            run nc -w 1 127.0.0.1 $port <<<$random
+
+            # we have to rety ncat as it can flake as we exec in the background so nc -l
+            # might not have bound the port yet, retry seems simpler than checking if the
+            # port is bound in the container, https://github.com/containers/podman/issues/21561.
+            retries=5
+            while [[ $retries -gt 0 ]]; do
+                # -w 1 adds a 1 second timeout. For some reason, ubuntu's ncat
+                # doesn't close the connection on EOF, and other options to
+                # change this are not portable across distros. -w seems to work.
+                run nc -w 1 127.0.0.1 $port <<<$random
+                if [[ $status -eq 0 ]]; then
+                    break
+                fi
+                sleep 0.5
+                retries=$((retries -1))
+            done
             is "$output" "$random" "ncat got data back (netmode=$netmode port=$port)"
         done
 
@@ -703,8 +761,8 @@ EOF
     done
 }
 
-@test "podman run CONTAINERS_CONF /etc/hosts options" {
-    skip_if_remote "CONTAINERS_CONF redirect does not work on remote"
+@test "podman run CONTAINERS_CONF_OVERRIDE /etc/hosts options" {
+    skip_if_remote "CONTAINERS_CONF_OVERRIDE redirect does not work on remote"
 
     containersconf=$PODMAN_TMPDIR/containers.conf
     basehost=$PODMAN_TMPDIR/host
@@ -729,7 +787,7 @@ EOF
     ip3="$(random_rfc1918_subnet).$((RANDOM % 256))"
     name3=host3$(random_string)
 
-    CONTAINERS_CONF=$containersconf run_podman run --rm --add-host $name3:$ip3 $IMAGE cat /etc/hosts
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman run --rm --add-host $name3:$ip3 $IMAGE cat /etc/hosts
     is "$output" ".*$ip3[[:blank:]]$name3.*" "--add-host entry in /etc/host"
     is "$output" ".*$ip1[[:blank:]]$name1.*" "first base entry in /etc/host"
     is "$output" ".*$ip2[[:blank:]]$name2.*" "second base entry in /etc/host"
@@ -740,7 +798,7 @@ EOF
 
     # now try again with container name and hostname == host entry name
     # in this case podman should not add its own entry thus we only have 5 entries (-1 for the removed --add-host)
-    CONTAINERS_CONF=$containersconf run_podman run --rm --name $name1 --hostname $name1 $IMAGE cat /etc/hosts
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman run --rm --name $name1 --hostname $name1 $IMAGE cat /etc/hosts
     is "$output" ".*$ip1[[:blank:]]$name1.*" "first base entry in /etc/host"
     is "$output" ".*$ip2[[:blank:]]$name2.*" "second base entry in /etc/host"
     is "$output" ".*$containersinternal_ip[[:blank:]]host\.containers\.internal.*" "host.containers.internal ip from config in /etc/host"
@@ -748,7 +806,7 @@ EOF
 }
 
 @test "podman run /etc/* permissions" {
-    skip_if_cgroupsv1 "FIXME: #15025: run --uidmap fails on cgroups v1"
+    skip_if_cgroupsv1 "run --uidmap fails on cgroups v1 (issue 15025, wontfix)"
     userns="--userns=keep-id"
     if ! is_rootless; then
         userns="--uidmap=0:1111111:65536 --gidmap=0:1111111:65536"
@@ -766,7 +824,7 @@ EOF
 @test "podman network rm --force bogus" {
     run_podman 1 network rm bogus
     is "$output" "Error: unable to find network with name or ID bogus: network not found" "Should print error"
-    run_podman network rm --force bogus
+    run_podman network rm -t -1 --force bogus
     is "$output" "" "Should print no output"
 }
 
@@ -793,6 +851,107 @@ EOF
     #    IPAM error: failed to open database ....
     XDG_RUNTIME_DIR=$tmp_run run_podman run --network bridge --rm $IMAGE ip a
     assert "$output" =~ "eth0"
+}
+
+@test "podman inspect list networks " {
+    run_podman create $IMAGE
+    cid=${output}
+    run_podman inspect --format '{{ .NetworkSettings.Networks }}' $cid
+    if is_rootless; then
+        is "$output" "map\[slirp4netns:.*" "NeworkSettings should contain one network named slirp4netns"
+    else
+        is "$output" "map\[podman:.*" "NeworkSettings should contain one network named podman"
+    fi
+    run_podman rm $cid
+
+    for network in "host" "none"; do
+        run_podman create --network=$network $IMAGE
+        cid=${output}
+        run_podman inspect --format '{{ .NetworkSettings.Networks }}' $cid
+        is "$output" "map\[$network:.*" "NeworkSettings should contain one network named $network"
+        run_podman inspect --format '{{ .NetworkSettings.SandboxKey }}' $cid
+        assert "$output" == "" "SandboxKey for network=$network should be empty when not running"
+        run_podman rm $cid
+    done
+
+    run_podman run -d --network=none $IMAGE top
+    cid=${output}
+    run_podman inspect --format '{{ .NetworkSettings.SandboxKey }}' $cid
+    assert "$output" =~ "^/proc/[0-9]+/ns/net\$" "SandboxKey for network=none when running"
+    run_podman rm -f -t0 $cid
+
+    # Check with ns:/PATH
+    if ! is_rootless; then
+        netns=netns$(random_string)
+        ip netns add $netns
+        run_podman create --network=ns:/var/run/netns/$netns $IMAGE
+        cid=${output}
+        run_podman inspect --format '{{ .NetworkSettings.Networks }}' $cid
+        is "$output" 'map[]' "NeworkSettings should be empty"
+        run_podman rm $cid
+     fi
+}
+
+# Test for https://github.com/containers/podman/issues/18615
+@test "podman network cleanup --userns + --restart" {
+    skip_if_cgroupsv1 "run --uidmap fails on cgroups v1 (issue 15025, wontfix)"
+
+    local net1=a-$(random_string 10)
+    # use /29 subnet to limit available ip space, a 29 gives 5 usable addresses (6 - 1 for the gw)
+    local subnet="$(random_rfc1918_subnet).0/29"
+    run_podman network create --subnet $subnet $net1
+    local cname=con1-$(random_string 10)
+    local cname2=con2-$(random_string 10)
+    local cname3=
+
+    local netns_count=
+    if ! is_rootless; then
+        netns_count=$(ls /run/netns | wc -l)
+    fi
+
+    # This will cause 7 containers runs with the restart policy (one more than the on failure limit)
+    # Since they run sequentially they should run fine without allocating all ips.
+    run_podman 1 run --name $cname --network $net1 --restart on-failure:6 --userns keep-id $IMAGE false
+
+    # Previously this would fail as the container would run out of ips after 5 restarts.
+    run_podman inspect --format "{{.RestartCount}}" $cname
+    assert "$output" == "6" "RestartCount for failing container with bridge network"
+
+    # Now make sure we can still run a container with free ips.
+    run_podman run --rm --network $net1 $IMAGE true
+
+    # And now because of all the fun we have to check the same with slirp4netns and pasta because
+    # that uses slightly different code paths. Note this would deadlock before the fix.
+    # https://github.com/containers/podman/issues/21477
+    run_podman 1 run --name $cname2 --network slirp4netns --restart on-failure:2 --userns keep-id $IMAGE false
+    run_podman inspect --format "{{.RestartCount}}" $cname2
+    assert "$output" == "2" "RestartCount for failing container with slirp4netns"
+
+    if is_rootless; then
+        # pasta can only run rootless
+        cname3=con3-$(random_string 10)
+        run_podman 1 run --name $cname3 --network pasta --restart on-failure:2 --userns keep-id $IMAGE false
+        run_podman inspect --format "{{.RestartCount}}" $cname3
+        assert "$output" == "2" "RestartCount for failing container with pasta"
+    else
+        # This is racy if other programs modify /run/netns while the test is running.
+        # However I think the risk is minimal and I think checking for this is important.
+        assert "$(ls /run/netns | wc -l)" == "$netns_count" "/run/netns has no leaked netns files"
+    fi
+
+    run_podman rm -f -t0 $cname $cname2 $cname3
+    run_podman network rm $net1
+}
+
+# Issue #20448 - /etc/hostname with --uts=host must show "uname -n"
+@test "podman --uts=host must use 'uname -n' for /etc/hostname" {
+    run_podman info --format '{{.Host.Hostname}}'
+    hostname="$output"
+    run_podman run --rm --uts=host $IMAGE cat /etc/hostname
+    assert "$output" = $hostname "/etc/hostname with --uts=host must be equal to 'uname -n'"
+
+    run_podman run --rm --net=host --uts=host $IMAGE cat /etc/hostname
+    assert "$output" = $hostname "/etc/hostname with --uts=host --net=host must be equal to 'uname -n'"
 }
 
 # vim: filetype=sh

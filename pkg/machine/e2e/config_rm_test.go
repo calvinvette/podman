@@ -5,13 +5,11 @@ type rmMachine struct {
 	  -f, --force           Stop and do not prompt before rming
 	      --save-ignition   Do not delete ignition file
 	      --save-image      Do not delete the image file
-	      --save-keys       Do not delete SSH keys
 
 	*/
 	force        bool
 	saveIgnition bool
 	saveImage    bool
-	saveKeys     bool
 
 	cmd []string
 }
@@ -27,9 +25,6 @@ func (i *rmMachine) buildCmd(m *machineTestBuilder) []string {
 	if i.saveImage {
 		cmd = append(cmd, "--save-image")
 	}
-	if i.saveKeys {
-		cmd = append(cmd, "--save-keys")
-	}
 	cmd = append(cmd, m.name)
 	i.cmd = cmd
 	return cmd
@@ -40,17 +35,12 @@ func (i *rmMachine) withForce() *rmMachine {
 	return i
 }
 
-func (i *rmMachine) withSaveIgnition() *rmMachine { //nolint:unused
+func (i *rmMachine) withSaveIgnition() *rmMachine {
 	i.saveIgnition = true
 	return i
 }
 
-func (i *rmMachine) withSaveImage() *rmMachine { //nolint:unused
+func (i *rmMachine) withSaveImage() *rmMachine {
 	i.saveImage = true
-	return i
-}
-
-func (i *rmMachine) withSaveKeys() *rmMachine { //nolint:unused
-	i.saveKeys = true
 	return i
 }

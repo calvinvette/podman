@@ -1,113 +1,68 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/containers/podman/v5/pkg/machine/compression"
+	"github.com/containers/podman/v5/pkg/machine/define"
+	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
 	"github.com/containers/storage/pkg/homedir"
 	"github.com/sirupsen/logrus"
 )
 
-type InitOptions struct {
-	CPUS         uint64
-	DiskSize     uint64
-	IgnitionPath string
-	ImagePath    string
-	Volumes      []string
-	VolumeDriver string
-	IsDefault    bool
-	Memory       uint64
-	Name         string
-	TimeZone     string
-	URI          url.URL
-	Username     string
-	ReExec       bool
-	Rootful      bool
-	// The numerical userid of the user that called machine
-	UID string
-}
-
-type Status = string
-
 const (
-	// Running indicates the qemu vm is running.
-	Running Status = "running"
-	// Stopped indicates the vm has stopped.
-	Stopped Status = "stopped"
-	// Starting indicated the vm is in the process of starting
-	Starting           Status = "starting"
 	DefaultMachineName string = "podman-machine-default"
+	apiUpTimeout              = 20 * time.Second
 )
 
-type Provider interface {
-	NewMachine(opts InitOptions) (VM, error)
-	LoadVMByName(name string) (VM, error)
-	List(opts ListOptions) ([]*ListResponse, error)
-	IsValidVMName(name string) (bool, error)
-	CheckExclusiveActiveVM() (bool, string, error)
-	RemoveAndCleanMachines() error
-	VMType() string
-}
-
-type RemoteConnectionType string
-
 var (
-	SSHRemoteConnection     RemoteConnectionType = "ssh"
-	DefaultIgnitionUserName                      = "core"
-	ErrNoSuchVM                                  = errors.New("VM does not exist")
-	ErrVMAlreadyExists                           = errors.New("VM already exists")
-	ErrVMAlreadyRunning                          = errors.New("VM already running or starting")
-	ErrMultipleActiveVM                          = errors.New("only one VM can be active at a time")
-	ErrNotImplemented                            = errors.New("functionality not implemented")
-	ForwarderBinaryName                          = "gvproxy"
+	ForwarderBinaryName = "gvproxy"
 )
 
 type Download struct {
 	Arch                  string
-	Artifact              string
-	CompressionType       string
+	Artifact              define.Artifact
 	CacheDir              string
-	Format                string
+	CompressionType       compression.ImageCompression
+	DataDir               string
+	Format                define.ImageFormat
 	ImageName             string
 	LocalPath             string
 	LocalUncompressedFile string
 	Sha256sum             string
-	URL                   *url.URL
-	VMName                string
 	Size                  int64
+	URL                   *url.URL
+	VMKind                define.VMType
+	VMName                string
 }
 
 type ListOptions struct{}
 
 type ListResponse struct {
-	Name           string
-	CreatedAt      time.Time
-	LastUp         time.Time
-	Running        bool
-	Starting       bool
-	Stream         string
-	VMType         string
-	CPUs           uint64
-	Memory         uint64
-	DiskSize       uint64
-	Port           int
-	RemoteUsername string
-	IdentityPath   string
-}
-
-type SetOptions struct {
-	CPUs     *uint64
-	DiskSize *uint64
-	Memory   *uint64
-	Rootful  *bool
+	Name               string
+	CreatedAt          time.Time
+	LastUp             time.Time
+	Running            bool
+	Starting           bool
+	Stream             string
+	VMType             string
+	CPUs               uint64
+	Memory             uint64
+	DiskSize           uint64
+	Port               int
+	RemoteUsername     string
+	IdentityPath       string
+	UserModeNetworking bool
 }
 
 type SSHOptions struct {
@@ -124,21 +79,25 @@ type StopOptions struct{}
 
 type RemoveOptions struct {
 	Force        bool
-	SaveKeys     bool
 	SaveImage    bool
 	SaveIgnition bool
 }
 
+type ResetOptions struct {
+	Force bool
+}
+
 type InspectOptions struct{}
 
+// TODO This can be removed when WSL is refactored into podman 5
 type VM interface {
-	Init(opts InitOptions) (bool, error)
+	Init(opts define.InitOptions) (bool, error)
 	Inspect() (*InspectInfo, error)
 	Remove(name string, opts RemoveOptions) (string, func() error, error)
-	Set(name string, opts SetOptions) ([]error, error)
+	Set(name string, opts define.SetOptions) ([]error, error)
 	SSH(name string, opts SSHOptions) error
 	Start(name string, opts StartOptions) error
-	State(bypass bool) (Status, error)
+	State(bypass bool) (define.Status, error)
 	Stop(name string, opts StopOptions) error
 }
 
@@ -148,39 +107,21 @@ type DistributionDownload interface {
 	CleanCache() error
 }
 type InspectInfo struct {
-	ConfigPath     VMFile
-	ConnectionInfo ConnectionConfig
-	Created        time.Time
-	Image          ImageConfig
-	LastUp         time.Time
-	Name           string
-	Resources      ResourceConfig
-	SSHConfig      SSHConfig
-	State          Status
-}
-
-func (rc RemoteConnectionType) MakeSSHURL(host, path, port, userName string) url.URL {
-	// TODO Should this function have input verification?
-	userInfo := url.User(userName)
-	uri := url.URL{
-		Scheme:     "ssh",
-		Opaque:     "",
-		User:       userInfo,
-		Host:       host,
-		Path:       path,
-		RawPath:    "",
-		ForceQuery: false,
-		RawQuery:   "",
-		Fragment:   "",
-	}
-	if len(port) > 0 {
-		uri.Host = net.JoinHostPort(uri.Hostname(), port)
-	}
-	return uri
+	ConfigPath         define.VMFile
+	ConnectionInfo     ConnectionConfig
+	Created            time.Time
+	Image              ImageConfig
+	LastUp             time.Time
+	Name               string
+	Resources          vmconfigs.ResourceConfig
+	SSHConfig          vmconfigs.SSHConfig
+	State              define.Status
+	UserModeNetworking bool
+	Rootful            bool
 }
 
 // GetCacheDir returns the dir where VM images are downloaded into when pulled
-func GetCacheDir(vmType string) (string, error) {
+func GetCacheDir(vmType define.VMType) (string, error) {
 	dataDir, err := GetDataDir(vmType)
 	if err != nil {
 		return "", err
@@ -194,17 +135,86 @@ func GetCacheDir(vmType string) (string, error) {
 
 // GetDataDir returns the filepath where vm images should
 // live for podman-machine.
-func GetDataDir(vmType string) (string, error) {
+func GetDataDir(vmType define.VMType) (string, error) {
 	dataDirPrefix, err := DataDirPrefix()
 	if err != nil {
 		return "", err
 	}
-	dataDir := filepath.Join(dataDirPrefix, vmType)
+	dataDir := filepath.Join(dataDirPrefix, vmType.String())
 	if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
 		return dataDir, nil
 	}
 	mkdirErr := os.MkdirAll(dataDir, 0755)
 	return dataDir, mkdirErr
+}
+
+// GetGlobalDataDir returns the root of all backends
+// for shared machine data.
+func GetGlobalDataDir() (string, error) {
+	dataDir, err := DataDirPrefix()
+	if err != nil {
+		return "", err
+	}
+
+	return dataDir, os.MkdirAll(dataDir, 0755)
+}
+
+func GetMachineDirs(vmType define.VMType) (*define.MachineDirs, error) {
+	rtDir, err := getRuntimeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	rtDir = filepath.Join(rtDir, "podman")
+	configDir, err := GetConfDir(vmType)
+	if err != nil {
+		return nil, err
+	}
+
+	configDirFile, err := define.NewMachineFile(configDir, nil)
+	if err != nil {
+		return nil, err
+	}
+	dataDir, err := GetDataDir(vmType)
+	if err != nil {
+		return nil, err
+	}
+
+	dataDirFile, err := define.NewMachineFile(dataDir, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	imageCacheDir, err := dataDirFile.AppendToNewVMFile("cache", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	rtDirFile, err := define.NewMachineFile(rtDir, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	dirs := define.MachineDirs{
+		ConfigDir:     configDirFile,
+		DataDir:       dataDirFile,
+		ImageCacheDir: imageCacheDir,
+		RuntimeDir:    rtDirFile,
+	}
+
+	// make sure all machine dirs are present
+	if err := os.MkdirAll(rtDir, 0755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return nil, err
+	}
+
+	// Because this is a mkdirall, we make the image cache dir
+	// which is a subdir of datadir (so the datadir is made anyway)
+	err = os.MkdirAll(imageCacheDir.GetPath(), 0755)
+
+	return &dirs, err
 }
 
 // DataDirPrefix returns the path prefix for all machine data files
@@ -219,12 +229,12 @@ func DataDirPrefix() (string, error) {
 
 // GetConfigDir returns the filepath to where configuration
 // files for podman-machine should live
-func GetConfDir(vmType string) (string, error) {
+func GetConfDir(vmType define.VMType) (string, error) {
 	confDirPrefix, err := ConfDirPrefix()
 	if err != nil {
 		return "", err
 	}
-	confDir := filepath.Join(confDirPrefix, vmType)
+	confDir := filepath.Join(confDirPrefix, vmType.String())
 	if _, err := os.Stat(confDir); !errors.Is(err, os.ErrNotExist) {
 		return confDir, nil
 	}
@@ -242,135 +252,164 @@ func ConfDirPrefix() (string, error) {
 	return confDir, nil
 }
 
-// GuardedRemoveAll functions much like os.RemoveAll but
-// will not delete certain catastrophic paths.
-func GuardedRemoveAll(path string) error {
-	if path == "" || path == "/" {
-		return fmt.Errorf("refusing to recursively delete `%s`", path)
-	}
-	return os.RemoveAll(path)
-}
-
-// ResourceConfig describes physical attributes of the machine
-type ResourceConfig struct {
-	// CPUs to be assigned to the VM
-	CPUs uint64
-	// Disk size in gigabytes assigned to the vm
-	DiskSize uint64
-	// Memory in megabytes assigned to the vm
-	Memory uint64
-}
-
-const maxSocketPathLength int = 103
-
-type VMFile struct {
-	// Path is the fully qualified path to a file
-	Path string
-	// Symlink is a shortened version of Path by using
-	// a symlink
-	Symlink *string `json:"symlink,omitempty"`
-}
-
-// GetPath returns the working path for a machinefile.  it returns
-// the symlink unless one does not exist
-func (m *VMFile) GetPath() string {
-	if m.Symlink == nil {
-		return m.Path
-	}
-	return *m.Symlink
-}
-
-// Delete removes the machinefile symlink (if it exists) and
-// the actual path
-func (m *VMFile) Delete() error {
-	if m.Symlink != nil {
-		if err := os.Remove(*m.Symlink); err != nil && !errors.Is(err, os.ErrNotExist) {
-			logrus.Errorf("unable to remove symlink %q", *m.Symlink)
-		}
-	}
-	if err := os.Remove(m.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
-// Read the contents of a given file and return in []bytes
-func (m *VMFile) Read() ([]byte, error) {
-	return os.ReadFile(m.GetPath())
-}
-
-// NewMachineFile is a constructor for VMFile
-func NewMachineFile(path string, symlink *string) (*VMFile, error) {
-	if len(path) < 1 {
-		return nil, errors.New("invalid machine file path")
-	}
-	if symlink != nil && len(*symlink) < 1 {
-		return nil, errors.New("invalid symlink path")
-	}
-	mf := VMFile{Path: path}
-	if symlink != nil && len(path) > maxSocketPathLength {
-		if err := mf.makeSymlink(symlink); err != nil && !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-	}
-	return &mf, nil
-}
-
-// makeSymlink for macOS creates a symlink in $HOME/.podman/
-// for a machinefile like a socket
-func (m *VMFile) makeSymlink(symlink *string) error {
-	homeDir, err := os.UserHomeDir()
+// GetSSHIdentityPath returns the path to the expected SSH private key
+func GetSSHIdentityPath(name string) (string, error) {
+	datadir, err := GetGlobalDataDir()
 	if err != nil {
-		return err
+		return "", err
 	}
-	sl := filepath.Join(homeDir, ".podman", *symlink)
-	// make the symlink dir and throw away if it already exists
-	if err := os.MkdirAll(filepath.Dir(sl), 0700); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	m.Symlink = &sl
-	return os.Symlink(m.Path, sl)
-}
-
-type Mount struct {
-	ReadOnly bool
-	Source   string
-	Tag      string
-	Target   string
-	Type     string
+	return filepath.Join(datadir, name), nil
 }
 
 // ImageConfig describes the bootable image for the VM
 type ImageConfig struct {
 	// IgnitionFile is the path to the filesystem where the
 	// ignition file was written (if needs one)
-	IgnitionFile VMFile `json:"IgnitionFilePath"`
+	IgnitionFile define.VMFile `json:"IgnitionFilePath"`
 	// ImageStream is the update stream for the image
 	ImageStream string
 	// ImageFile is the fq path to
-	ImagePath VMFile `json:"ImagePath"`
-}
-
-// HostUser describes the host user
-type HostUser struct {
-	// Whether this machine should run in a rootful or rootless manner
-	Rootful bool
-	// UID is the numerical id of the user that called machine
-	UID int
-}
-
-// SSHConfig contains remote access information for SSH
-type SSHConfig struct {
-	// IdentityPath is the fq path to the ssh priv key
-	IdentityPath string
-	// SSH port for user networking
-	Port int
-	// RemoteUsername of the vm user
-	RemoteUsername string
+	ImagePath define.VMFile `json:"ImagePath"`
 }
 
 // ConnectionConfig contains connections like sockets, etc.
 type ConnectionConfig struct {
 	// PodmanSocket is the exported podman service socket
-	PodmanSocket *VMFile `json:"PodmanSocket"`
+	PodmanSocket *define.VMFile `json:"PodmanSocket"`
+	// PodmanPipe is the exported podman service named pipe (Windows hosts only)
+	PodmanPipe *define.VMFile `json:"PodmanPipe"`
+}
+
+type APIForwardingState int
+
+const (
+	NoForwarding APIForwardingState = iota
+	ClaimUnsupported
+	NotInstalled
+	MachineLocal
+	DockerGlobal
+)
+
+// TODO THis should be able to be removed once WSL is refactored for podman5
+type Virtualization struct {
+	artifact    define.Artifact
+	compression compression.ImageCompression
+	format      define.ImageFormat
+	vmKind      define.VMType
+}
+
+func (p *Virtualization) Artifact() define.Artifact {
+	return p.artifact
+}
+
+func (p *Virtualization) Compression() compression.ImageCompression {
+	return p.compression
+}
+
+func (p *Virtualization) Format() define.ImageFormat {
+	return p.format
+}
+
+func (p *Virtualization) VMType() define.VMType {
+	return p.vmKind
+}
+
+func (p *Virtualization) NewDownload(vmName string) (Download, error) {
+	cacheDir, err := GetCacheDir(p.VMType())
+	if err != nil {
+		return Download{}, err
+	}
+
+	dataDir, err := GetDataDir(p.VMType())
+	if err != nil {
+		return Download{}, err
+	}
+
+	return Download{
+		Artifact:        p.Artifact(),
+		CacheDir:        cacheDir,
+		CompressionType: p.Compression(),
+		DataDir:         dataDir,
+		Format:          p.Format(),
+		VMKind:          p.VMType(),
+		VMName:          vmName,
+	}, nil
+}
+
+func NewVirtualization(artifact define.Artifact, compression compression.ImageCompression, format define.ImageFormat, vmKind define.VMType) Virtualization {
+	return Virtualization{
+		artifact,
+		compression,
+		format,
+		vmKind,
+	}
+}
+
+func dialSocket(socket string, timeout time.Duration) (net.Conn, error) {
+	scheme := "unix"
+	if strings.Contains(socket, "://") {
+		url, err := url.Parse(socket)
+		if err != nil {
+			return nil, err
+		}
+		scheme = url.Scheme
+		socket = url.Path
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var dial func() (net.Conn, error)
+	switch scheme {
+	default:
+		fallthrough
+	case "unix":
+		dial = func() (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socket)
+		}
+	case "npipe":
+		dial = func() (net.Conn, error) {
+			return DialNamedPipe(ctx, socket)
+		}
+	}
+
+	backoff := 500 * time.Millisecond
+	for {
+		conn, err := dial()
+		if !errors.Is(err, os.ErrNotExist) {
+			return conn, err
+		}
+
+		select {
+		case <-time.After(backoff):
+			backoff *= 2
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func WaitAndPingAPI(sock string) {
+	client := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				con, err := dialSocket(sock, apiUpTimeout)
+				if err != nil {
+					return nil, err
+				}
+				if err := con.SetDeadline(time.Now().Add(apiUpTimeout)); err != nil {
+					return nil, err
+				}
+				return con, nil
+			},
+		},
+	}
+
+	resp, err := client.Get("http://host/_ping")
+	if err == nil {
+		defer resp.Body.Close()
+	}
+	if err != nil || resp.StatusCode != 200 {
+		logrus.Warn("API socket failed ping test")
+	}
 }

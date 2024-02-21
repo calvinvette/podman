@@ -31,27 +31,30 @@ The *filters* argument format is of `key=value` or `key!=value`. If there is mor
 
 Supported filters:
 
-| Filter             | Description                                                                                   |
-| :----------------: | --------------------------------------------------------------------------------------------- |
-| *id*               | Filter by image id.                                                                           |
-| *before*           | Filter by images created before the given IMAGE (name or tag).                                |
-| *containers*       | Filter by images with a running container.                                                    |
-| *dangling*         | Filter by dangling (unused) images.                                                           |
-| *intermediate*     | Filter by images that are dangling and have no children                                       |
-| *label*            | Filter by images with (or without, in the case of label!=[...] is used) the specified labels. |
-| *manifest*         | Filter by images that are manifest lists.                                                     |
-| *readonly*         | Filter by read-only or read/write images.                                                     |
-| *reference*        | Filter by image name.                                                                         |
-| *after*/*since*    | Filter by images created after the given IMAGE (name or tag).                                 |
-| *until*            | Filter by images created until the given duration or time.                                    |
+| Filter       | Description                                                                                   |
+|:------------:|-----------------------------------------------------------------------------------------------|
+| id           | Filter by image ID.                                                                           |
+| before       | Filter by images created before the given IMAGE (name or tag).                                |
+| containers   | Filter by images with a running container.                                                    |
+| dangling     | Filter by dangling (unused) images.                                                           |
+| digest       | Filter by digest.                                                                             |
+| intermediate | Filter by images that are dangling and have no children                                       |
+| label        | Filter by images with (or without, in the case of label!=[...] is used) the specified labels. |
+| manifest     | Filter by images that are manifest lists.                                                     |
+| readonly     | Filter by read-only or read/write images.                                                     |
+| reference    | Filter by image name.                                                                         |
+| after/since  | Filter by images created after the given IMAGE (name or tag).                                 |
+| until        | Filter by images created until the given duration or time.                                    |
 
-The `id` *filter* accepts the image id string.
+The `id` *filter* accepts the image ID string.
 
 The `before` *filter* accepts formats: `<image-name>[:<tag>]`, `<image id>` or `<image@digest>`.
 
 The `containers` *filter* shows images that have a running container based on that image.
 
 The `dangling` *filter* shows images that are taking up disk space and serve no purpose. Dangling image is a file system layer that was used in a previous build of an image and is no longer referenced by any image. They are denoted with the `<none>` tag, consume disk space and serve no active purpose.
+
+The `digest` *filter* accepts the image digest string.
 
 The `intermediate` *filter* shows images that are dangling and have no children.
 
@@ -85,10 +88,9 @@ Valid placeholders for the Go template are listed below:
 | .History        | History of the image layer                                 |
 | .ID             | Image ID (truncated)                                       |
 | .Id             | Image ID (full SHA)                                        |
-| .ImageSummary   | Internal data structure, not actually useful               |
 | .IsDangling     | Is image dangling? (true/false)                            |
 | .IsReadOnly     | Is unage read-only? (true/false)                           |
-| .Labels         | map[] of labels                                            |
+| .Labels ...     | map[] of labels                                            |
 | .Names          | Image FQIN                                                 |
 | .ParentId       | Full SHA of parent image ID, or null (string)              |
 | .ReadOnly       | Same as .IsReadOnly                                        |
@@ -120,6 +122,7 @@ Sort by *created*, *id*, *repository*, *size* or *tag* (default: **created**)
 
 ## EXAMPLE
 
+List all non-dangling images in local storage:
 ```
 $ podman images
 REPOSITORY                         TAG         IMAGE ID      CREATED       SIZE
@@ -129,12 +132,14 @@ registry.fedoraproject.org/fedora  latest      2ecb6df95994  3 weeks ago   169 M
 quay.io/libpod/testimage           20220615    f26aa69bb3f3  2 months ago  8.4 MB
 ```
 
+List all images matching the specified name:
 ```
 $ podman images stable
 REPOSITORY             TAG         IMAGE ID      CREATED       SIZE
 quay.io/podman/stable  latest      e0b7dabc3352  22 hours ago  331 MB
 ```
 
+List image ids of all images in containers storage:
 ```
 # podman image ls --quiet
 e3d42bcaf643
@@ -142,6 +147,7 @@ ebb91b73692b
 4526339ae51c
 ```
 
+List all images without showing the headers:
 ```
 # podman images --noheading
 docker.io/kubernetes/pause                   latest   e3d42bcaf643   3 years ago   251 kB
@@ -149,6 +155,7 @@ docker.io/kubernetes/pause                   latest   e3d42bcaf643   3 years ago
 docker.io/library/ubuntu                     latest   4526339ae51c   6 weeks ago   126 MB
 ```
 
+List all images without truncating output:
 ```
 # podman image list --no-trunc
 REPOSITORY                                   TAG      IMAGE ID                                                                  CREATED       SIZE
@@ -157,6 +164,7 @@ docker.io/kubernetes/pause                   latest   sha256:e3d42bcaf643097dd1b
 docker.io/library/ubuntu                     latest   sha256:4526339ae51c3cdc97956a7a961c193c39dfc6bd9733b0d762a36c6881b5583a   6 weeks ago   126 MB
 ```
 
+List all image content with the formatted content:
 ```
 # podman images --format "table {{.ID}} {{.Repository}} {{.Tag}}"
 IMAGE ID       REPOSITORY                                   TAG
@@ -165,12 +173,14 @@ ebb91b73692b   <none>                                       <none>
 4526339ae51c   docker.io/library/ubuntu                     latest
 ```
 
+List any image that is not tagged with a name (dangling):
 ```
 # podman images --filter dangling=true
 REPOSITORY   TAG      IMAGE ID       CREATED       SIZE
 <none>       <none>   ebb91b73692b   4 weeks ago   27.2 MB
 ```
 
+List all images in JSON format:
 ```
 # podman images --format json
 [
@@ -204,6 +214,7 @@ REPOSITORY   TAG      IMAGE ID       CREATED       SIZE
 ]
 ```
 
+List all images sorted by the specified column:
 ```
 # podman images --sort repository
 REPOSITORY                                   TAG      IMAGE ID       CREATED       SIZE
@@ -214,6 +225,7 @@ registry.access.redhat.com/rhel7            latest   7a840db7f020   2 weeks ago 
 registry.fedoraproject.org/fedora           27       801894bc0e43   6 weeks ago          246 MB
 ```
 
+Show the difference between listed images in use versus all images, including dangling images:
 ```
 # podman images
 REPOSITORY                 TAG      IMAGE ID       CREATED         SIZE

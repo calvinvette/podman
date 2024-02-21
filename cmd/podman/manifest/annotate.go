@@ -4,9 +4,9 @@ import (
 	"fmt"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +18,7 @@ var (
 		Long:              "Adds or updates information about an entry in a manifest list or image index.",
 		RunE:              annotate,
 		Args:              cobra.ExactArgs(2),
-		Example:           `podman manifest annotate --annotation left=right mylist:v1.11 image:v1.11-amd64`,
+		Example:           `podman manifest annotate --annotation left=right mylist:v1.11 sha256:15352d97781ffdf357bf3459c037be3efac4133dc9070c2dce7eca7c05c3e736`,
 		ValidArgsFunction: common.AutocompleteImages,
 	}
 )
@@ -31,7 +31,7 @@ func init() {
 	flags := annotateCmd.Flags()
 
 	annotationFlagName := "annotation"
-	flags.StringSliceVar(&manifestAnnotateOpts.Annotation, annotationFlagName, nil, "set an `annotation` for the specified image")
+	flags.StringArrayVar(&manifestAnnotateOpts.Annotation, annotationFlagName, nil, "set an `annotation` for the specified image")
 	_ = annotateCmd.RegisterFlagCompletionFunc(annotationFlagName, completion.AutocompleteNone)
 
 	archFlagName := "arch"

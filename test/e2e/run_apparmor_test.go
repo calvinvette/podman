@@ -1,5 +1,4 @@
 //go:build !remote_testing
-// +build !remote_testing
 
 package integration
 
@@ -9,10 +8,9 @@ import (
 	"path/filepath"
 
 	"github.com/containers/common/pkg/apparmor"
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
 // wip
@@ -28,33 +26,12 @@ func skipIfAppArmorDisabled() {
 }
 
 var _ = Describe("Podman run", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
-
-	BeforeEach(func() {
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
-	})
 
 	It("podman run apparmor default", func() {
 		skipIfAppArmorDisabled()
 		session := podmanTest.Podman([]string{"create", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set
@@ -66,7 +43,7 @@ var _ = Describe("Podman run", func() {
 		skipIfAppArmorDisabled()
 		session := podmanTest.Podman([]string{"create", "--privileged", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set
@@ -78,7 +55,7 @@ var _ = Describe("Podman run", func() {
 		skipIfAppArmorDisabled()
 		session := podmanTest.Podman([]string{"create", "--security-opt", fmt.Sprintf("apparmor=%s", apparmor.Profile), "--privileged", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set
@@ -105,11 +82,11 @@ profile aa-test-profile flags=(attach_disconnected,mediate_deleted) {
 		aaFile := filepath.Join(os.TempDir(), "aaFile")
 		Expect(os.WriteFile(aaFile, []byte(aaProfile), 0755)).To(Succeed())
 		parse := SystemExec("apparmor_parser", []string{"-Kr", aaFile})
-		Expect(parse).Should(Exit(0))
+		Expect(parse).Should(ExitCleanly())
 
 		session := podmanTest.Podman([]string{"create", "--security-opt", "apparmor=aa-test-profile", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set
@@ -128,7 +105,7 @@ profile aa-test-profile flags=(attach_disconnected,mediate_deleted) {
 		skipIfAppArmorDisabled()
 		session := podmanTest.Podman([]string{"create", "--security-opt", "apparmor=unconfined", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set
@@ -149,7 +126,7 @@ profile aa-test-profile flags=(attach_disconnected,mediate_deleted) {
 		// Should succeed if user specifies apparmor on disabled system
 		session := podmanTest.Podman([]string{"create", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set
@@ -162,7 +139,7 @@ profile aa-test-profile flags=(attach_disconnected,mediate_deleted) {
 
 		session := podmanTest.Podman([]string{"create", "--security-opt", "apparmor=unconfined", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		cid := session.OutputToString()
 		// Verify that apparmor.Profile is being set

@@ -8,13 +8,13 @@ import (
 	"strings"
 
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/channel"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/channel"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
@@ -25,13 +25,15 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 
 	query := struct {
-		All               bool   `schema:"all"`
-		CompressionFormat string `schema:"compressionFormat"`
-		Destination       string `schema:"destination"`
-		Format            string `schema:"format"`
-		RemoveSignatures  bool   `schema:"removeSignatures"`
-		TLSVerify         bool   `schema:"tlsVerify"`
-		Quiet             bool   `schema:"quiet"`
+		All                    bool   `schema:"all"`
+		CompressionFormat      string `schema:"compressionFormat"`
+		CompressionLevel       *int   `schema:"compressionLevel"`
+		ForceCompressionFormat bool   `schema:"forceCompressionFormat"`
+		Destination            string `schema:"destination"`
+		Format                 string `schema:"format"`
+		RemoveSignatures       bool   `schema:"removeSignatures"`
+		TLSVerify              bool   `schema:"tlsVerify"`
+		Quiet                  bool   `schema:"quiet"`
 	}{
 		TLSVerify: true,
 		// #14971: older versions did not sent *any* data, so we need
@@ -72,14 +74,24 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 		password = authconf.Password
 	}
 	options := entities.ImagePushOptions{
-		All:               query.All,
-		Authfile:          authfile,
-		CompressionFormat: query.CompressionFormat,
-		Format:            query.Format,
-		Password:          password,
-		Quiet:             true,
-		RemoveSignatures:  query.RemoveSignatures,
-		Username:          username,
+		All:                    query.All,
+		Authfile:               authfile,
+		CompressionFormat:      query.CompressionFormat,
+		CompressionLevel:       query.CompressionLevel,
+		ForceCompressionFormat: query.ForceCompressionFormat,
+		Format:                 query.Format,
+		Password:               password,
+		Quiet:                  query.Quiet,
+		RemoveSignatures:       query.RemoveSignatures,
+		Username:               username,
+	}
+
+	if _, found := r.URL.Query()["compressionFormat"]; found {
+		if _, foundForceCompression := r.URL.Query()["forceCompressionFormat"]; !foundForceCompression {
+			// If `compressionFormat` is set and no value for `forceCompressionFormat`
+			// is selected then default has to be `true`.
+			options.ForceCompressionFormat = true
+		}
 	}
 
 	if _, found := r.URL.Query()["tlsVerify"]; found {
@@ -90,7 +102,8 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 
 	// Let's keep thing simple when running in quiet mode and push directly.
 	if query.Quiet {
-		if err := imageEngine.Push(r.Context(), source, destination, options); err != nil {
+		_, err := imageEngine.Push(r.Context(), source, destination, options)
+		if err != nil {
 			utils.Error(w, http.StatusBadRequest, fmt.Errorf("pushing image %q: %w", destination, err))
 			return
 		}
@@ -104,9 +117,10 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 
 	pushCtx, pushCancel := context.WithCancel(r.Context())
 	var pushError error
+	var pushReport *entities.ImagePushReport
 	go func() {
 		defer pushCancel()
-		pushError = imageEngine.Push(pushCtx, source, destination, options)
+		pushReport, pushError = imageEngine.Push(pushCtx, source, destination, options)
 	}()
 
 	flush := func() {
@@ -122,20 +136,23 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(true)
 	for {
-		var report entities.ImagePushReport
+		var stream entities.ImagePushStream
 		select {
 		case s := <-writer.Chan():
-			report.Stream = string(s)
-			if err := enc.Encode(report); err != nil {
+			stream.Stream = string(s)
+			if err := enc.Encode(stream); err != nil {
 				logrus.Warnf("Failed to encode json: %v", err)
 			}
 			flush()
 		case <-pushCtx.Done():
+			if pushReport != nil {
+				stream.ManifestDigest = pushReport.ManifestDigest
+			}
 			if pushError != nil {
-				report.Error = pushError.Error()
-				if err := enc.Encode(report); err != nil {
-					logrus.Warnf("Failed to encode json: %v", err)
-				}
+				stream.Error = pushError.Error()
+			}
+			if err := enc.Encode(stream); err != nil {
+				logrus.Warnf("Failed to encode json: %v", err)
 			}
 			flush()
 			return

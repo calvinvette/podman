@@ -10,10 +10,10 @@ import (
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	envLib "github.com/containers/podman/v4/pkg/env"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	envLib "github.com/containers/podman/v5/pkg/env"
+	"github.com/containers/podman/v5/utils"
 	"github.com/google/shlex"
 	"github.com/sirupsen/logrus"
 )
@@ -135,7 +135,7 @@ func generateRunlabelCommand(runlabel string, img *libimage.Image, inputName str
 		name = splitImageName[len(splitImageName)-1]
 		// make sure to remove the tag from the image name, otherwise the name cannot
 		// be used as container name because a colon is an illegal character
-		name = strings.SplitN(name, ":", 2)[0]
+		name, _, _ = strings.Cut(name, ":")
 	}
 
 	// Append the user-specified arguments to the runlabel (command).

@@ -9,11 +9,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containers/podman/v4/pkg/rootless"
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,27 +19,6 @@ const sigCatch = "trap \"echo FOO >> /h/fifo \" 8; echo READY >> /h/fifo; while 
 const sigCatch2 = "trap \"echo Received\" SIGFPE; while :; do sleep 0.25; done"
 
 var _ = Describe("Podman run with --sig-proxy", func() {
-	var (
-		tmpdir     string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
-
-	BeforeEach(func() {
-		tmpdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tmpdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
-	})
 
 	Specify("signals are forwarded to container using sig-proxy", func() {
 		if podmanTest.Host.Arch == "ppc64le" {
@@ -49,17 +26,17 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 		}
 		signal := syscall.SIGFPE
 		// Set up a socket for communication
-		udsDir := filepath.Join(tmpdir, "socket")
+		udsDir := filepath.Join(tempdir, "socket")
 		err := os.Mkdir(udsDir, 0700)
 		Expect(err).ToNot(HaveOccurred())
 		udsPath := filepath.Join(udsDir, "fifo")
 		err = syscall.Mkfifo(udsPath, 0600)
 		Expect(err).ToNot(HaveOccurred())
-		if rootless.IsRootless() {
+		if isRootless() {
 			err = podmanTest.RestoreArtifact(fedoraMinimal)
 			Expect(err).ToNot(HaveOccurred())
 		}
-		_, pid := podmanTest.PodmanPID([]string{"run", "-it", "-v", fmt.Sprintf("%s:/h:Z", udsDir), fedoraMinimal, "bash", "-c", sigCatch})
+		_, pid := podmanTest.PodmanPID([]string{"run", "-v", fmt.Sprintf("%s:/h:Z", udsDir), fedoraMinimal, "bash", "-c", sigCatch})
 
 		uds, _ := os.OpenFile(udsPath, os.O_RDONLY|syscall.O_NONBLOCK, 0600)
 		defer uds.Close()
@@ -70,7 +47,7 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 			buf := make([]byte, 1024)
 			n, err := uds.Read(buf)
 			if err != nil && err != io.EOF {
-				fmt.Println(err)
+				GinkgoWriter.Println(err)
 				return
 			}
 			data := string(buf[0:n])
@@ -96,7 +73,7 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 			buf := make([]byte, 1024)
 			n, err := uds.Read(buf)
 			if err != nil {
-				fmt.Println(err)
+				GinkgoWriter.Println(err)
 				return
 			}
 			data := string(buf[0:n])
@@ -113,7 +90,7 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 
 	Specify("signals are not forwarded to container with sig-proxy false", func() {
 		signal := syscall.SIGFPE
-		if rootless.IsRootless() {
+		if isRootless() {
 			err = podmanTest.RestoreArtifact(fedoraMinimal)
 			Expect(err).ToNot(HaveOccurred())
 		}
@@ -130,7 +107,7 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 		// Kill with -9 to guarantee the container dies
 		killSession := podmanTest.Podman([]string{"kill", "-s", "9", "test2"})
 		killSession.WaitWithDefaultTimeout()
-		Expect(killSession).Should(Exit(0))
+		Expect(killSession).Should(ExitCleanly())
 
 		session.WaitWithDefaultTimeout()
 		Expect(session).To(ExitWithError())

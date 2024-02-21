@@ -3,17 +3,17 @@ package network
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 var (
-	networkReloadDescription = `reload container networks, recreating firewall rules`
+	networkReloadDescription = `Reload container networks, recreating firewall rules`
 	networkReloadCommand     = &cobra.Command{
 		Annotations: map[string]string{registry.EngineMode: registry.ABIMode},
 		Use:         "reload [options] [CONTAINER...]",
@@ -24,8 +24,7 @@ var (
 			return validate.CheckAllLatestAndIDFile(cmd, args, false, "")
 		},
 		ValidArgsFunction: common.AutocompleteContainers,
-		Example: `podman network reload --latest
-  podman network reload 3c13ef6dd843
+		Example: `podman network reload 3c13ef6dd843
   podman network reload test1 test2`,
 	}
 )

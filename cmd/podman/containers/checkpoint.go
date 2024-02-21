@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/criu"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/criu"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +27,7 @@ var (
 `
 	checkpointCommand = &cobra.Command{
 		Use:   "checkpoint [options] CONTAINER [CONTAINER...]",
-		Short: "Checkpoints one or more containers",
+		Short: "Checkpoint one or more containers",
 		Long:  checkpointDescription,
 		RunE:  checkpoint,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -36,7 +36,7 @@ var (
 		ValidArgsFunction: common.AutocompleteContainersRunning,
 		Example: `podman container checkpoint --keep ctrID
   podman container checkpoint --all
-  podman container checkpoint --leave-running --latest`,
+  podman container checkpoint --leave-running ctrID`,
 	}
 )
 
@@ -87,6 +87,7 @@ func init() {
 
 func checkpoint(cmd *cobra.Command, args []string) error {
 	var errs utils.OutputErrors
+	args = utils.RemoveSlash(args)
 	podmanStart := time.Now()
 	if cmd.Flags().Changed("compress") {
 		if checkpointOptions.Export == "" {

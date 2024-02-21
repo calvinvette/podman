@@ -8,13 +8,13 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +43,7 @@ var (
   podman pod rm -f 860a4b23
   podman pod rm -f -a`,
 	}
-	stopTimeout uint
+	stopTimeout int
 )
 
 func init() {
@@ -62,7 +62,7 @@ func init() {
 	_ = rmCommand.RegisterFlagCompletionFunc(podIDFileFlagName, completion.AutocompleteDefault)
 
 	timeFlagName := "time"
-	flags.UintVarP(&stopTimeout, timeFlagName, "t", containerConfig.Engine.StopTimeout, "Seconds to wait for pod stop before killing the container")
+	flags.IntVarP(&stopTimeout, timeFlagName, "t", int(containerConfig.Engine.StopTimeout), "Seconds to wait for pod stop before killing the container")
 	_ = rmCommand.RegisterFlagCompletionFunc(timeFlagName, completion.AutocompleteNone)
 
 	validate.AddLatestFlag(rmCommand, &rmOptions.Latest)
@@ -79,7 +79,8 @@ func rm(cmd *cobra.Command, args []string) error {
 		if !rmOptions.Force {
 			return errors.New("--force option must be specified to use the --time option")
 		}
-		rmOptions.Timeout = &stopTimeout
+		timeout := uint(stopTimeout)
+		rmOptions.Timeout = &timeout
 	}
 
 	errs = append(errs, removePods(args, rmOptions.PodRmOptions, true)...)
@@ -113,7 +114,10 @@ func removePods(namesOrIDs []string, rmOptions entities.PodRmOptions, printIDs b
 			return nil
 		}
 		setExitCode(err)
-		return append(errs, err)
+		errs = append(errs, err)
+		if !strings.Contains(err.Error(), define.ErrRemovingCtrs.Error()) {
+			return errs
+		}
 	}
 
 	// in the cli, first we print out all the successful attempts
@@ -128,6 +132,11 @@ func removePods(namesOrIDs []string, rmOptions entities.PodRmOptions, printIDs b
 			}
 			setExitCode(r.Err)
 			errs = append(errs, r.Err)
+			for ctr, err := range r.RemovedCtrs {
+				if err != nil {
+					errs = append(errs, fmt.Errorf("error removing container %s from pod %s: %w", ctr, r.Id, err))
+				}
+			}
 		}
 	}
 	return errs

@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
 )
 
 // IsDir returns true if the specified path refers to a directory.
@@ -138,4 +139,12 @@ func IsCheckpointImage(ctx context.Context, namesOrIDs []string) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+func RemoveSlash(input []string) []string {
+	output := make([]string, 0, len(input))
+	for _, in := range input {
+		output = append(output, strings.TrimPrefix(in, "/"))
+	}
+	return output
 }

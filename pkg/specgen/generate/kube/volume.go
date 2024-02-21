@@ -1,3 +1,5 @@
+//go:build !remote
+
 package kube
 
 import (
@@ -7,11 +9,11 @@ import (
 
 	"github.com/containers/common/pkg/parse"
 	"github.com/containers/common/pkg/secrets"
-	"github.com/containers/podman/v4/libpod"
-	v1 "github.com/containers/podman/v4/pkg/k8s.io/api/core/v1"
+	"github.com/containers/podman/v5/libpod"
+	v1 "github.com/containers/podman/v5/pkg/k8s.io/api/core/v1"
 
-	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
+	"sigs.k8s.io/yaml"
 )
 
 const (
@@ -32,6 +34,7 @@ const (
 	KubeVolumeTypeCharDevice
 	KubeVolumeTypeSecret
 	KubeVolumeTypeEmptyDir
+	KubeVolumeTypeEmptyDirTmpfs
 )
 
 //nolint:revive
@@ -48,10 +51,13 @@ type KubeVolume struct {
 	// If the volume is optional, we can move on if it is not found
 	// Only used when there are volumes in a yaml that refer to a configmap
 	Optional bool
+	// DefaultMode sets the permissions on files created for the volume
+	// This is optional and defaults to 0644
+	DefaultMode int32
 }
 
 // Create a KubeVolume from an HostPathVolumeSource
-func VolumeFromHostPath(hostPath *v1.HostPathVolumeSource) (*KubeVolume, error) {
+func VolumeFromHostPath(hostPath *v1.HostPathVolumeSource, mountLabel string) (*KubeVolume, error) {
 	if hostPath.Type != nil {
 		switch *hostPath.Type {
 		case v1.HostPathDirectoryOrCreate:
@@ -59,7 +65,7 @@ func VolumeFromHostPath(hostPath *v1.HostPathVolumeSource) (*KubeVolume, error) 
 				return nil, err
 			}
 			// Label a newly created volume
-			if err := libpod.LabelVolumePath(hostPath.Path); err != nil {
+			if err := libpod.LabelVolumePath(hostPath.Path, mountLabel); err != nil {
 				return nil, fmt.Errorf("giving %s a label: %w", hostPath.Path, err)
 			}
 		case v1.HostPathFileOrCreate:
@@ -73,7 +79,8 @@ func VolumeFromHostPath(hostPath *v1.HostPathVolumeSource) (*KubeVolume, error) 
 				}
 			}
 			// unconditionally label a newly created volume
-			if err := libpod.LabelVolumePath(hostPath.Path); err != nil {
+
+			if err := libpod.LabelVolumePath(hostPath.Path, mountLabel); err != nil {
 				return nil, fmt.Errorf("giving %s a label: %w", hostPath.Path, err)
 			}
 		case v1.HostPathSocket:
@@ -131,9 +138,18 @@ func VolumeFromHostPath(hostPath *v1.HostPathVolumeSource) (*KubeVolume, error) 
 // VolumeFromSecret creates a new kube volume from a kube secret.
 func VolumeFromSecret(secretSource *v1.SecretVolumeSource, secretsManager *secrets.SecretsManager) (*KubeVolume, error) {
 	kv := &KubeVolume{
-		Type:   KubeVolumeTypeSecret,
-		Source: secretSource.SecretName,
-		Items:  map[string][]byte{},
+		Type:        KubeVolumeTypeSecret,
+		Source:      secretSource.SecretName,
+		Items:       map[string][]byte{},
+		DefaultMode: v1.SecretVolumeSourceDefaultMode,
+	}
+	// Set the defaultMode if set in the kube yaml
+	validMode, err := isValidDefaultMode(secretSource.DefaultMode)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DefaultMode for secret %q: %w", secretSource.SecretName, err)
+	}
+	if validMode {
+		kv.DefaultMode = *secretSource.DefaultMode
 	}
 
 	// returns a byte array of a kube secret data, meaning this needs to go into a string map
@@ -146,20 +162,31 @@ func VolumeFromSecret(secretSource *v1.SecretVolumeSource, secretsManager *secre
 		return nil, err
 	}
 
-	data := &v1.Secret{}
+	secret := &v1.Secret{}
 
-	err = yaml.Unmarshal(secretByte, data)
+	err = yaml.Unmarshal(secretByte, secret)
 	if err != nil {
 		return nil, err
 	}
 
-	// add key: value pairs to the items array
-	for key, entry := range data.Data {
-		kv.Items[key] = entry
-	}
+	// If there are Items specified in the volumeSource, that overwrites the Data from the Secret
+	if len(secretSource.Items) > 0 {
+		for _, item := range secretSource.Items {
+			if val, ok := secret.Data[item.Key]; ok {
+				kv.Items[item.Path] = val
+			} else if val, ok := secret.StringData[item.Key]; ok {
+				kv.Items[item.Path] = []byte(val)
+			}
+		}
+	} else {
+		// add key: value pairs to the items array
+		for key, entry := range secret.Data {
+			kv.Items[key] = entry
+		}
 
-	for key, entry := range data.StringData {
-		kv.Items[key] = []byte(entry)
+		for key, entry := range secret.StringData {
+			kv.Items[key] = []byte(entry)
+		}
 	}
 
 	return kv, nil
@@ -176,8 +203,9 @@ func VolumeFromPersistentVolumeClaim(claim *v1.PersistentVolumeClaimVolumeSource
 func VolumeFromConfigMap(configMapVolumeSource *v1.ConfigMapVolumeSource, configMaps []v1.ConfigMap) (*KubeVolume, error) {
 	var configMap *v1.ConfigMap
 	kv := &KubeVolume{
-		Type:  KubeVolumeTypeConfigMap,
-		Items: map[string][]byte{},
+		Type:        KubeVolumeTypeConfigMap,
+		Items:       map[string][]byte{},
+		DefaultMode: v1.ConfigMapVolumeSourceDefaultMode,
 	}
 	for _, cm := range configMaps {
 		if cm.Name == configMapVolumeSource.Name {
@@ -187,6 +215,14 @@ func VolumeFromConfigMap(configMapVolumeSource *v1.ConfigMapVolumeSource, config
 			configMap = &matchedCM
 			break
 		}
+	}
+	// Set the defaultMode if set in the kube yaml
+	validMode, err := isValidDefaultMode(configMapVolumeSource.DefaultMode)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DefaultMode for configMap %q: %w", configMapVolumeSource.Name, err)
+	}
+	if validMode {
+		kv.DefaultMode = *configMapVolumeSource.DefaultMode
 	}
 
 	if configMap == nil {
@@ -228,14 +264,24 @@ func VolumeFromConfigMap(configMapVolumeSource *v1.ConfigMapVolumeSource, config
 
 // Create a kubeVolume for an emptyDir volume
 func VolumeFromEmptyDir(emptyDirVolumeSource *v1.EmptyDirVolumeSource, name string) (*KubeVolume, error) {
-	return &KubeVolume{Type: KubeVolumeTypeEmptyDir, Source: name}, nil
+	if emptyDirVolumeSource.Medium == v1.StorageMediumMemory {
+		return &KubeVolume{
+			Type:   KubeVolumeTypeEmptyDirTmpfs,
+			Source: name,
+		}, nil
+	} else {
+		return &KubeVolume{
+			Type:   KubeVolumeTypeEmptyDir,
+			Source: name,
+		}, nil
+	}
 }
 
 // Create a KubeVolume from one of the supported VolumeSource
-func VolumeFromSource(volumeSource v1.VolumeSource, configMaps []v1.ConfigMap, secretsManager *secrets.SecretsManager, volName string) (*KubeVolume, error) {
+func VolumeFromSource(volumeSource v1.VolumeSource, configMaps []v1.ConfigMap, secretsManager *secrets.SecretsManager, volName, mountLabel string) (*KubeVolume, error) {
 	switch {
 	case volumeSource.HostPath != nil:
-		return VolumeFromHostPath(volumeSource.HostPath)
+		return VolumeFromHostPath(volumeSource.HostPath, mountLabel)
 	case volumeSource.PersistentVolumeClaim != nil:
 		return VolumeFromPersistentVolumeClaim(volumeSource.PersistentVolumeClaim)
 	case volumeSource.ConfigMap != nil:
@@ -245,16 +291,16 @@ func VolumeFromSource(volumeSource v1.VolumeSource, configMaps []v1.ConfigMap, s
 	case volumeSource.EmptyDir != nil:
 		return VolumeFromEmptyDir(volumeSource.EmptyDir, volName)
 	default:
-		return nil, errors.New("HostPath, ConfigMap, EmptyDir, and PersistentVolumeClaim are currently the only supported VolumeSource")
+		return nil, errors.New("HostPath, ConfigMap, EmptyDir, Secret, and PersistentVolumeClaim are currently the only supported VolumeSource")
 	}
 }
 
 // Create a map of volume name to KubeVolume
-func InitializeVolumes(specVolumes []v1.Volume, configMaps []v1.ConfigMap, secretsManager *secrets.SecretsManager) (map[string]*KubeVolume, error) {
+func InitializeVolumes(specVolumes []v1.Volume, configMaps []v1.ConfigMap, secretsManager *secrets.SecretsManager, mountLabel string) (map[string]*KubeVolume, error) {
 	volumes := make(map[string]*KubeVolume)
 
 	for _, specVolume := range specVolumes {
-		volume, err := VolumeFromSource(specVolume.VolumeSource, configMaps, secretsManager, specVolume.Name)
+		volume, err := VolumeFromSource(specVolume.VolumeSource, configMaps, secretsManager, specVolume.Name, mountLabel)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create volume %q: %w", specVolume.Name, err)
 		}
@@ -263,4 +309,15 @@ func InitializeVolumes(specVolumes []v1.Volume, configMaps []v1.ConfigMap, secre
 	}
 
 	return volumes, nil
+}
+
+// isValidDefaultMode returns true if mode is between 0 and 0777
+func isValidDefaultMode(mode *int32) (bool, error) {
+	if mode == nil {
+		return false, nil
+	}
+	if *mode >= 0 && *mode <= int32(os.ModePerm) {
+		return true, nil
+	}
+	return false, errors.New("must be between 0000 and 0777")
 }

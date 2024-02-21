@@ -1,37 +1,18 @@
 package integration
 
 import (
-	"os"
 	"path/filepath"
 
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman generate spec", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
 
 	BeforeEach(func() {
 		SkipIfRemote("podman generate spec is not supported on the remote client")
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
 	})
 
 	It("podman generate spec bogus should fail", func() {
@@ -44,22 +25,22 @@ var _ = Describe("Podman generate spec", func() {
 		SkipIfRootlessCgroupsV1("Not supported for rootless + CgroupsV1")
 		session := podmanTest.Podman([]string{"create", "--cpus", "5", "--name", "specgen", ALPINE})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"generate", "spec", "--compact", "specgen"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 	})
 
 	It("podman generate spec file", func() {
 		SkipIfRootlessCgroupsV1("Not supported for rootless + CgroupsV1")
 		session := podmanTest.Podman([]string{"create", "--cpus", "5", "--name", "specgen", ALPINE})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"generate", "spec", "--filename", filepath.Join(tempdir, "out.json"), "specgen"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		path := filepath.Join(tempdir, "out.json")
 
@@ -73,10 +54,16 @@ var _ = Describe("Podman generate spec", func() {
 	It("generate spec pod", func() {
 		session := podmanTest.Podman([]string{"pod", "create", "--cpus", "5", "--name", "podspecgen"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		session = podmanTest.Podman([]string{"generate", "spec", "--compact", "podspecgen"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+
+		if isRootless() && !CGROUPSV2 {
+			Expect(session).Should(Exit(0))
+			Expect(session.ErrorToString()).Should(ContainSubstring("Resource limits are not supported and ignored on cgroups V1 rootless"))
+		} else {
+			Expect(session).Should(ExitCleanly())
+		}
 	})
 })

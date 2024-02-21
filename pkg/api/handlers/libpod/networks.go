@@ -8,13 +8,13 @@ import (
 	"errors"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/gorilla/schema"
 )
 
@@ -51,6 +51,27 @@ func CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	utils.WriteResponse(w, http.StatusOK, report)
+}
+
+func UpdateNetwork(w http.ResponseWriter, r *http.Request) {
+	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
+	ic := abi.ContainerEngine{Libpod: runtime}
+
+	networkUpdateOptions := entities.NetworkUpdateOptions{}
+	if err := json.NewDecoder(r.Body).Decode(&networkUpdateOptions); err != nil {
+		utils.Error(w, http.StatusBadRequest, fmt.Errorf("failed to decode request JSON payload: %w", err))
+		return
+	}
+
+	name := utils.GetName(r)
+
+	err := ic.NetworkUpdate(r.Context(), name, networkUpdateOptions)
+	if err != nil {
+		utils.Error(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	utils.WriteResponse(w, http.StatusNoContent, nil)
 }
 
 func ListNetworks(w http.ResponseWriter, r *http.Request) {

@@ -5,41 +5,22 @@ import (
 	"os"
 	"path/filepath"
 
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	. "github.com/onsi/gomega/gexec"
 )
 
-var _ = Describe("Podman trust", func() {
-	var (
-		tempdir string
-
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
+// Without Ordered, tests flake with "Getting key identity" (#18358)
+var _ = Describe("Podman trust", Ordered, func() {
 
 	BeforeEach(func() {
 		SkipIfRemote("podman-remote does not support image trust")
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
 	})
 
 	It("podman image trust show", func() {
 		session := podmanTest.Podman([]string{"image", "trust", "show", "-n", "--registrypath", filepath.Join(INTEGRATION_ROOT, "test"), "--policypath", filepath.Join(INTEGRATION_ROOT, "test/policy.json")})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		outArray := session.OutputToStringArray()
 		Expect(outArray).To(HaveLen(3))
 
@@ -54,7 +35,7 @@ var _ = Describe("Podman trust", func() {
 		policyJSON := filepath.Join(podmanTest.TempDir, "trust_set_test.json")
 		session := podmanTest.Podman([]string{"image", "trust", "set", "--policypath", policyJSON, "-t", "accept", "default"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		var teststruct map[string][]map[string]string
 		policyContent, err := os.ReadFile(policyJSON)
 		if err != nil {
@@ -70,7 +51,7 @@ var _ = Describe("Podman trust", func() {
 	It("podman image trust show --json", func() {
 		session := podmanTest.Podman([]string{"image", "trust", "show", "--registrypath", filepath.Join(INTEGRATION_ROOT, "test"), "--policypath", filepath.Join(INTEGRATION_ROOT, "test/policy.json"), "--json"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(BeValidJSON())
 		var teststruct []map[string]string
 		err = json.Unmarshal(session.Out.Contents(), &teststruct)
@@ -109,7 +90,7 @@ var _ = Describe("Podman trust", func() {
 	It("podman image trust show --raw", func() {
 		session := podmanTest.Podman([]string{"image", "trust", "show", "--policypath", filepath.Join(INTEGRATION_ROOT, "test/policy.json"), "--raw"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		contents, err := os.ReadFile(filepath.Join(INTEGRATION_ROOT, "test/policy.json"))
 		Expect(err).ShouldNot(HaveOccurred())
 		Expect(session.OutputToString()).To(BeValidJSON())

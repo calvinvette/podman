@@ -5,12 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/specgen"
-	. "github.com/onsi/ginkgo"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/specgen"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 )
@@ -360,7 +360,8 @@ var _ = Describe("Podman containers ", func() {
 	It("logging", func() {
 		stdoutChan := make(chan string, 10)
 		s := specgen.NewSpecGenerator(alpine.name, false)
-		s.Terminal = true
+		terminal := true
+		s.Terminal = &terminal
 		s.Command = []string{"date", "-R"}
 		r, err := containers.CreateWithSpec(bt.conn, s, nil)
 		Expect(err).ToNot(HaveOccurred())
@@ -410,7 +411,7 @@ var _ = Describe("Podman containers ", func() {
 
 		// With bogus descriptors
 		_, err = containers.Top(bt.conn, cid, new(containers.TopOptions).WithDescriptors([]string{"Me,Neither"}))
-		Expect(err).ToNot(HaveOccurred())
+		Expect(err).To(HaveOccurred())
 	})
 
 	It("podman bogus container does not exist in local storage", func() {
@@ -774,7 +775,8 @@ var _ = Describe("Podman containers ", func() {
 		_, err = bt.RunTopContainer(&name2, nil)
 		Expect(err).ToNot(HaveOccurred())
 		s := specgen.NewSpecGenerator(alpine.name, false)
-		s.Terminal = true
+		terminal := true
+		s.Terminal = &terminal
 		s.Command = []string{"date", "-R"}
 		_, err = containers.CreateWithSpec(bt.conn, s, nil)
 		Expect(err).ToNot(HaveOccurred())

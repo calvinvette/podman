@@ -5,14 +5,14 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/domain/entities/types"
+	"github.com/containers/podman/v5/pkg/specgen"
 	jsoniter "github.com/json-iterator/go"
 )
 
-func CreateWithSpec(ctx context.Context, s *specgen.SpecGenerator, options *CreateOptions) (entities.ContainerCreateResponse, error) {
-	var ccr entities.ContainerCreateResponse
+func CreateWithSpec(ctx context.Context, s *specgen.SpecGenerator, options *CreateOptions) (types.ContainerCreateResponse, error) {
+	var ccr types.ContainerCreateResponse
 	if options == nil {
 		options = new(CreateOptions)
 	}

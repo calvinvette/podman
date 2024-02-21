@@ -1,3 +1,5 @@
+//go:build !windows
+
 package notifyproxy
 
 import (
@@ -11,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
@@ -103,18 +105,16 @@ func New(tmpDir string) (*NotifyProxy, error) {
 	// Start waiting for the READY message in the background.  This way,
 	// the proxy can be created prior to starting the container and
 	// circumvents a race condition on writing/reading on the socket.
-	proxy.waitForReady()
+	proxy.listen()
 
 	return proxy, nil
 }
 
-// waitForReady waits for the READY message in the background. The goroutine
-// returns on receiving READY or when the socket is closed.
-func (p *NotifyProxy) waitForReady() {
+// listen waits for the READY message in the background, and process file
+// descriptors and barriers send over the NOTIFY_SOCKET. The goroutine returns
+// when the socket is closed.
+func (p *NotifyProxy) listen() {
 	go func() {
-		// Read until the `READY` message is received or the connection
-		// is closed.
-
 		// See https://github.com/containers/podman/issues/16515 for a description of the protocol.
 		fdSize := unix.CmsgSpace(4)
 		buffer := make([]byte, _notifyBufferMax)
@@ -128,6 +128,7 @@ func (p *NotifyProxy) waitForReady() {
 					return
 				}
 				logrus.Errorf("Error reading unix message on socket %q: %v", p.socketPath, err)
+				continue
 			}
 
 			if n > _notifyBufferMax || oobn > _notifyFdMax*fdSize {
@@ -207,7 +208,7 @@ type Container interface {
 	ID() string
 }
 
-// WaitAndClose waits until receiving the `READY` notify message. Note that the
+// Wait waits until receiving the `READY` notify message. Note that the
 // this function must only be executed inside a systemd service which will kill
 // the process after a given timeout. If the (optional) container stopped
 // running before the `READY` is received, the waiting gets canceled and

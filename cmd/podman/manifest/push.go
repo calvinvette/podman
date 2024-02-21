@@ -8,11 +8,11 @@ import (
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -21,9 +21,11 @@ import (
 type manifestPushOptsWrapper struct {
 	entities.ImagePushOptions
 
-	TLSVerifyCLI, Insecure bool // CLI only
-	CredentialsCLI         string
-	SignPassphraseFileCLI  string
+	TLSVerifyCLI, Insecure     bool // CLI only
+	CredentialsCLI             string
+	SignBySigstoreParamFileCLI string
+	SignPassphraseFileCLI      string
+	DigestFile                 string
 }
 
 var (
@@ -34,12 +36,13 @@ var (
 		Long:              "Pushes manifest lists and image indexes to registries.",
 		RunE:              push,
 		Example:           `podman manifest push mylist:v1.11 docker://quay.io/myuser/image:v1.11`,
-		Args:              cobra.ExactArgs(2),
+		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: common.AutocompleteImages,
 	}
 )
 
 func init() {
+	podmanConfig := registry.PodmanConfig()
 	registry.Commands = append(registry.Commands, registry.CliCommand{
 		Command: pushCmd,
 		Parent:  manifestCmd,
@@ -54,6 +57,10 @@ func init() {
 	flags.StringVar(&manifestPushOpts.Authfile, authfileFlagName, auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	_ = pushCmd.RegisterFlagCompletionFunc(authfileFlagName, completion.AutocompleteDefault)
 
+	addCompressionFlagName := "add-compression"
+	flags.StringSliceVar(&manifestPushOpts.AddCompression, addCompressionFlagName, podmanConfig.ContainersConfDefaultsRO.Engine.AddCompression.Get(), "add instances with selected compression while pushing")
+	_ = pushCmd.RegisterFlagCompletionFunc(addCompressionFlagName, common.AutocompleteCompressionFormat)
+
 	certDirFlagName := "cert-dir"
 	flags.StringVar(&manifestPushOpts.CertDir, certDirFlagName, "", "use certificates at the specified path to access the registry")
 	_ = pushCmd.RegisterFlagCompletionFunc(certDirFlagName, completion.AutocompleteDefault)
@@ -66,6 +73,8 @@ func init() {
 	flags.StringVar(&manifestPushOpts.DigestFile, digestfileFlagName, "", "after copying the image, write the digest of the resulting digest to the file")
 	_ = pushCmd.RegisterFlagCompletionFunc(digestfileFlagName, completion.AutocompleteDefault)
 
+	flags.BoolVar(&manifestPushOpts.ForceCompressionFormat, "force-compression", false, "Use the specified compression algorithm even if the destination contains a differently-compressed variant already")
+
 	formatFlagName := "format"
 	flags.StringVarP(&manifestPushOpts.Format, formatFlagName, "f", "", "manifest type (oci or v2s2) to attempt to use when pushing the manifest list (default is manifest type of source)")
 	_ = pushCmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteManifestFormat)
@@ -75,6 +84,10 @@ func init() {
 	signByFlagName := "sign-by"
 	flags.StringVar(&manifestPushOpts.SignBy, signByFlagName, "", "sign the image using a GPG key with the specified `FINGERPRINT`")
 	_ = pushCmd.RegisterFlagCompletionFunc(signByFlagName, completion.AutocompleteNone)
+
+	signBySigstoreFlagName := "sign-by-sigstore"
+	flags.StringVar(&manifestPushOpts.SignBySigstoreParamFileCLI, signBySigstoreFlagName, "", "Sign the image using a sigstore parameter file at `PATH`")
+	_ = pushCmd.RegisterFlagCompletionFunc(signBySigstoreFlagName, completion.AutocompleteDefault)
 
 	signBySigstorePrivateKeyFlagName := "sign-by-sigstore-private-key"
 	flags.StringVar(&manifestPushOpts.SignBySigstorePrivateKeyFile, signBySigstorePrivateKeyFlagName, "", "Sign the image using a sigstore private key at `PATH`")
@@ -94,20 +107,27 @@ func init() {
 	flags.StringVar(&manifestPushOpts.CompressionFormat, compressionFormat, "", "compression format to use")
 	_ = pushCmd.RegisterFlagCompletionFunc(compressionFormat, common.AutocompleteCompressionFormat)
 
+	compressionLevel := "compression-level"
+	flags.Int(compressionLevel, 0, "compression level to use")
+	_ = pushCmd.RegisterFlagCompletionFunc(compressionLevel, completion.AutocompleteNone)
+
 	if registry.IsRemote() {
 		_ = flags.MarkHidden("cert-dir")
 		_ = flags.MarkHidden(signByFlagName)
+		_ = flags.MarkHidden(signBySigstoreFlagName)
 		_ = flags.MarkHidden(signBySigstorePrivateKeyFlagName)
 		_ = flags.MarkHidden(signPassphraseFileFlagName)
 	}
 }
 
 func push(cmd *cobra.Command, args []string) error {
-	if err := auth.CheckAuthFile(manifestPushOpts.Authfile); err != nil {
-		return err
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(manifestPushOpts.Authfile); err != nil {
+			return err
+		}
 	}
 	listImageSpec := args[0]
-	destSpec := args[1]
+	destSpec := args[len(args)-1]
 	if listImageSpec == "" {
 		return fmt.Errorf(`invalid image name "%s"`, listImageSpec)
 	}
@@ -128,9 +148,12 @@ func push(cmd *cobra.Command, args []string) error {
 		manifestPushOpts.Writer = os.Stderr
 	}
 
-	if err := common.PrepareSigningPassphrase(&manifestPushOpts.ImagePushOptions, manifestPushOpts.SignPassphraseFileCLI); err != nil {
+	signingCleanup, err := common.PrepareSigning(&manifestPushOpts.ImagePushOptions,
+		manifestPushOpts.SignPassphraseFileCLI, manifestPushOpts.SignBySigstoreParamFileCLI)
+	if err != nil {
 		return err
 	}
+	defer signingCleanup()
 
 	// TLS verification in c/image is controlled via a `types.OptionalBool`
 	// which allows for distinguishing among set-true, set-false, unspecified
@@ -145,7 +168,24 @@ func push(cmd *cobra.Command, args []string) error {
 		}
 		manifestPushOpts.SkipTLSVerify = types.NewOptionalBool(manifestPushOpts.Insecure)
 	}
-	digest, err := registry.ImageEngine().ManifestPush(registry.Context(), args[0], args[1], manifestPushOpts.ImagePushOptions)
+
+	if cmd.Flags().Changed("compression-level") {
+		val, err := cmd.Flags().GetInt("compression-level")
+		if err != nil {
+			return err
+		}
+		manifestPushOpts.CompressionLevel = &val
+	}
+
+	if cmd.Flags().Changed("compression-format") {
+		if !cmd.Flags().Changed("force-compression") {
+			// If `compression-format` is set and no value for `--force-compression`
+			// is selected then defaults to `true`.
+			manifestPushOpts.ForceCompressionFormat = true
+		}
+	}
+
+	digest, err := registry.ImageEngine().ManifestPush(registry.Context(), listImageSpec, destSpec, manifestPushOpts.ImagePushOptions)
 	if err != nil {
 		return err
 	}

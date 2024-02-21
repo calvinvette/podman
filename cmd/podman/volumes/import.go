@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/parse"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/parse"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/utils"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +25,7 @@ var (
 		Args:              cobra.ExactArgs(2),
 		ValidArgsFunction: common.AutocompleteVolumes,
 		Example: `podman volume import my_vol /home/user/import.tar
-  cat ctr.tar | podman import volume my_vol -`,
+  cat ctr.tar | podman volume import my_vol -`,
 	}
 )
 

@@ -10,16 +10,16 @@ podman\-events - Monitor Podman events
 
 ## DESCRIPTION
 
-Monitor and print events that occur in Podman. Each event will include a timestamp,
+Monitor and print events that occur in Podman. Each event includes a timestamp,
 a type, a status, name (if applicable), and image (if applicable).  The default logging
 mechanism is *journald*. This can be changed in containers.conf by changing the `events_logger`
 value to `file`.  Only `file` and `journald` are accepted. A `none` logger is also
-available but this logging mechanism completely disables events; nothing will be reported by
+available, but this logging mechanism completely disables events; nothing is reported by
 `podman events`.
 
 By default, streaming mode is used, printing new events as they occur.  Previous events can be listed via `--since` and `--until`.
 
-The *container* event type will report the follow statuses:
+The *container* event type reports the follow statuses:
  * attach
  * checkpoint
  * cleanup
@@ -48,7 +48,7 @@ The *container* event type will report the follow statuses:
  * unmount
  * unpause
 
-The *pod* event type will report the follow statuses:
+The *pod* event type reports the follow statuses:
  * create
  * kill
  * pause
@@ -57,7 +57,7 @@ The *pod* event type will report the follow statuses:
  * stop
  * unpause
 
-The *image* event type will report the following statuses:
+The *image* event type reports the following statuses:
  * loadFromArchive,
  * mount
  * pull
@@ -68,15 +68,18 @@ The *image* event type will report the following statuses:
  * unmount
  * untag
 
-The *system* type will report the following statuses:
+The *system* type reports the following statuses:
  * refresh
  * renumber
 
-The *volume* type will report the following statuses:
+The *volume* type reports the following statuses:
  * create
  * prune
  * remove
 
+#### Verbose Create Events
+
+Setting `events_container_create_inspect_data=true` in containers.conf(5) instructs Podman to create more verbose container-create events which include a JSON payload with detailed information about the containers.  The JSON payload is identical to the one of podman-container-inspect(1).  The associated field in journald is named `PODMAN_CONTAINER_INSPECT_DATA`.
 
 ## OPTIONS
 
@@ -84,13 +87,16 @@ The *volume* type will report the following statuses:
 
 Filter events that are displayed.  They must be in the format of "filter=value".  The following
 filters are supported:
- * container=name_or_id
- * event=event_status (described above)
- * image=name_or_id
- * label=key=value
- * pod=name_or_id
- * volume=name_or_id
- * type=event_type (described above)
+
+| **Filter** | **Description**                     |
+|------------|-------------------------------------|
+| container  | [Name or ID] Container's name or ID |
+| event      | event_status (described above)      |
+| image      | [Name or ID] Image name or ID       |
+| label      | [key=value] label                   |
+| pod        | [Name or ID] Pod name or ID         |
+| volume     | [Name or ID] Volume name or ID      |
+| type       | Event_type (described above)        |
 
 In the case where an ID is used, the ID may be in its full or shortened form.  The "die" event is mapped to "died" for Docker compatibility.
 
@@ -98,19 +104,21 @@ In the case where an ID is used, the ID may be in its full or shortened form.  T
 
 Format the output to JSON Lines or using the given Go template.
 
-| **Placeholder**    | **Description**                               |
-|--------------------|-----------------------------------------------|
-| .Attributes        | created_at, _by, labels, and more (map[])     |
-| .ContainerExitCode | Exit code (int)                               |
-| .Details ...       | Internal structure, not actually useful       |
-| .HealthStatus      | Health Status (string)                        |
-| .ID                | Container ID (full 64-bit SHA)                |
-| .Image             | Name of image being run (string)              |
-| .Name              | Container name (string)                       |
-| .Network           | Name of network being used (string)           |
-| .Status            | Event status (e.g., create, start, died, ...) |
-| .Time              | Event timestamp (string)                      |
-| .Type              | Event type (e.g., image, container, pod, ...) |
+| **Placeholder**         | **Description**                               |
+|-------------------------|-----------------------------------------------|
+| .Attributes ...         | created_at, _by, labels, and more (map[])     |
+| .ContainerExitCode      | Exit code (int)                               |
+| .ContainerInspectData   | Payload of the container's inspect            |
+| .HealthStatus           | Health Status (string)                        |
+| .ID                     | Container ID (full 64-bit SHA)                |
+| .Image                  | Name of image being run (string)              |
+| .Name                   | Container name (string)                       |
+| .Network                | Name of network being used (string)           |
+| .PodID                  | ID of pod associated with container, if any   |
+| .Status                 | Event status (e.g., create, start, died, ...) |
+| .Time ...               | Event timestamp (string)                      |
+| .ToHumanReadable *bool* | If true, truncates CID in output              |
+| .Type                   | Event type (e.g., image, container, pod, ...) |
 
 #### **--help**
 
@@ -124,17 +132,39 @@ Do not truncate the output (default *true*).
 
 Show all events created since the given timestamp
 
+#### **--stream**
+
+Stream events and do not exit after reading the last known event (default *true*).
 
 #### **--until**=*timestamp*
 
 Show all events created until the given timestamp
 
 The *since* and *until* values can be RFC3339Nano time stamps or a Go duration string such as 10m, 5h. If no
-*since* or *until* values are provided, only new events will be shown.
+*since* or *until* values are provided, only new events are shown.
+
+## JOURNALD IDENTIFIERS
+
+The journald events-backend of Podman uses the following journald identifiers.  You can use the identifiers to filter Podman events directly with `journalctl`.
+
+| **Identifier**                | **Description**                                         |
+|-------------------------------|---------------------------------------------------------|
+| SYSLOG_IDENTIFIER             | Always set to "podman"                                  |
+| PODMAN_EVENT                  | The event status as described above                     |
+| PODMAN_TYPE                   | The event type as described above                       |
+| PODMAN_TIME                   | The time stamp when the event was written               |
+| PODMAN_NAME                   | Name of the event object (e.g., container, image)       |
+| PODMAN_ID                     | ID of the event object (e.g., container, image)         |
+| PODMAN_EXIT_CODE              | Exit code of the container                              |
+| PODMAN_POD_ID                 | Pod ID of the container                                 |
+| PODMAN_LABELS                 | Labels of the container                                 |
+| PODMAN_HEALTH_STATUS          | Health status of the container                          |
+| PODMAN_CONTAINER_INSPECT_DATA | The JSON payload of `podman-inspect` as described above |
+| PODMAN_NETWORK_NAME           | The name of the network                                 |
 
 ## EXAMPLES
 
-Showing Podman events
+Show Podman events:
 ```
 $ podman events
 2019-03-02 10:33:42.312377447 -0600 CST container create 34503c192940 (image=docker.io/library/alpine:latest, name=friendly_allen)
@@ -144,16 +174,16 @@ $ podman events
 2019-03-02 10:33:51.047104966 -0600 CST container cleanup 34503c192940 (image=docker.io/library/alpine:latest, name=friendly_allen)
 ```
 
-Show only Podman create events
+Show only Podman container create events:
 ```
 $ podman events -f event=create
 2019-03-02 10:36:01.375685062 -0600 CST container create 20dc581f6fbf (image=docker.io/library/alpine:latest, name=sharp_morse)
-2019-03-02 10:36:08.561188337 -0600 CST container create 58e7e002344c (image=k8s.gcr.io/pause:3.1, name=3e701f270d54-infra)
+2019-03-02 10:36:08.561188337 -0600 CST container create 58e7e002344c (image=registry.k8s.io/pause:3.1, name=3e701f270d54-infra)
 2019-03-02 10:36:13.146899437 -0600 CST volume create cad6dc50e087 (image=, name=cad6dc50e0879568e7d656bd004bd343d6035e7fc4024e1711506fe2fd459e6f)
 2019-03-02 10:36:29.978806894 -0600 CST container create d81e30f1310f (image=docker.io/library/busybox:latest, name=musing_newton)
 ```
 
-Show only Podman pod create events
+Show only Podman pod create events:
 ```
 $ podman events --filter event=create --filter type=pod
 2019-03-02 10:44:29.601746633 -0600 CST pod create 1df5ebca7b44 (image=, name=confident_hawking)
@@ -164,13 +194,13 @@ $ podman events --filter event=create --filter type=pod
 Show only Podman events created in the last five minutes:
 ```
 $ sudo podman events --since 5m
-2019-03-02 10:44:29.598835409 -0600 CST container create b629d10d3831 (image=k8s.gcr.io/pause:3.1, name=1df5ebca7b44-infra)
+2019-03-02 10:44:29.598835409 -0600 CST container create b629d10d3831 (image=registry.k8s.io/pause:3.1, name=1df5ebca7b44-infra)
 2019-03-02 10:44:29.601746633 -0600 CST pod create 1df5ebca7b44 (image=, name=confident_hawking)
-2019-03-02 10:44:42.371100253 -0600 CST container create 170a0f457d00 (image=k8s.gcr.io/pause:3.1, name=ca731231718e-infra)
+2019-03-02 10:44:42.371100253 -0600 CST container create 170a0f457d00 (image=registry.k8s.io/pause:3.1, name=ca731231718e-infra)
 2019-03-02 10:44:42.374637304 -0600 CST pod create ca731231718e (image=, name=webapp)
 ```
 
-Show Podman events in JSON Lines format
+Show Podman events in JSON Lines format:
 ```
 $ podman events --format json
 {"ID":"683b0909d556a9c02fa8cd2b61c3531a965db42158627622d1a67b391964d519","Image":"localhost/myshdemo:latest","Name":"agitated_diffie","Status":"cleanup","Time":"2019-04-27T22:47:00.849932843-04:00","Type":"container"}

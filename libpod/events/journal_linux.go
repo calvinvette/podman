@@ -1,5 +1,4 @@
 //go:build systemd
-// +build systemd
 
 package events
 
@@ -11,7 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/coreos/go-systemd/v22/sdjournal"
 	"github.com/sirupsen/logrus"
@@ -47,8 +47,8 @@ func (e EventJournalD) Write(ee Event) error {
 		m["PODMAN_IMAGE"] = ee.Image
 		m["PODMAN_NAME"] = ee.Name
 		m["PODMAN_ID"] = ee.ID
-		if ee.ContainerExitCode != 0 {
-			m["PODMAN_EXIT_CODE"] = strconv.Itoa(ee.ContainerExitCode)
+		if ee.ContainerExitCode != nil {
+			m["PODMAN_EXIT_CODE"] = strconv.Itoa(*ee.ContainerExitCode)
 		}
 		if ee.PodID != "" {
 			m["PODMAN_POD_ID"] = ee.PodID
@@ -73,7 +73,19 @@ func (e EventJournalD) Write(ee Event) error {
 	case Volume:
 		m["PODMAN_NAME"] = ee.Name
 	}
-	return journal.Send(ee.ToHumanReadable(false), journal.PriInfo, m)
+
+	// starting with commit 7e6e267329 we set LogLevel=notice for the systemd healthcheck unit
+	// This so it doesn't log the started/stopped unit messages al the time which spam the
+	// journal if a small interval is used. That however broke the healthcheck event as it no
+	// longer showed up in podman events when running as root as we only send the event on info
+	// level. To fix this we have to send the event on notice level.
+	// https://github.com/containers/podman/issues/20342
+	prio := journal.PriInfo
+	if len(ee.HealthStatus) > 0 {
+		prio = journal.PriNotice
+	}
+
+	return journal.Send(ee.ToHumanReadable(false), prio, m)
 }
 
 // Read reads events from the journal and sends qualified events to the event channel
@@ -108,7 +120,13 @@ func (e EventJournalD) Read(ctx context.Context, options ReadOptions) error {
 	// match only podman journal entries
 	podmanJournal := sdjournal.Match{Field: "SYSLOG_IDENTIFIER", Value: "podman"}
 	if err := j.AddMatch(podmanJournal.String()); err != nil {
-		return fmt.Errorf("failed to add journal filter for event log: %w", err)
+		return fmt.Errorf("failed to add SYSLOG_IDENTIFIER journal filter for event log: %w", err)
+	}
+
+	// make sure we only read events for the current user
+	uidMatch := sdjournal.Match{Field: "_UID", Value: strconv.Itoa(rootless.GetRootlessUID())}
+	if err := j.AddMatch(uidMatch.String()); err != nil {
+		return fmt.Errorf("failed to add _UID journal filter for event log: %w", err)
 	}
 
 	if len(options.Since) == 0 && len(options.Until) == 0 && options.Stream {
@@ -121,10 +139,19 @@ func (e EventJournalD) Read(ctx context.Context, options ReadOptions) error {
 		if _, err := j.Previous(); err != nil {
 			return fmt.Errorf("failed to move journal cursor to previous entry: %w", err)
 		}
+	} else if len(options.Since) > 0 {
+		since, err := util.ParseInputTime(options.Since, true)
+		if err != nil {
+			return err
+		}
+		// seek based on time which helps to reduce unnecessary event reads
+		if err := j.SeekRealtimeUsec(uint64(since.UnixMicro())); err != nil {
+			return err
+		}
 	}
 
 	for {
-		entry, err := getNextEntry(ctx, j, options.Stream, untilTime)
+		entry, err := GetNextEntry(ctx, j, options.Stream, untilTime)
 		if err != nil {
 			return err
 		}
@@ -178,7 +205,7 @@ func newEventFromJournalEntry(entry *sdjournal.JournalEntry) (*Event, error) {
 			if err != nil {
 				logrus.Errorf("Parsing event exit code %s", code)
 			} else {
-				newEvent.ContainerExitCode = intCode
+				newEvent.ContainerExitCode = &intCode
 			}
 		}
 
@@ -210,10 +237,10 @@ func (e EventJournalD) String() string {
 	return Journald.String()
 }
 
-// getNextEntry returns the next entry in the journal. If the end  of the
+// GetNextEntry returns the next entry in the journal. If the end of the
 // journal is reached and stream is not set or the current time is after
-// the until time this function return nil,nil.
-func getNextEntry(ctx context.Context, j *sdjournal.Journal, stream bool, untilTime time.Time) (*sdjournal.JournalEntry, error) {
+// the until time this function returns nil,nil.
+func GetNextEntry(ctx context.Context, j *sdjournal.Journal, stream bool, untilTime time.Time) (*sdjournal.JournalEntry, error) {
 	for {
 		select {
 		case <-ctx.Done():

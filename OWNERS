@@ -1,11 +1,13 @@
 approvers:
   - Luap99
   - TomSweeneyRedHat
+  - alexlarsson
   - ashley-cui
   - baude
   - edsantiago
   - flouthoc
   - giuseppe
+  - jakecorrenti
   - jwhonce
   - lsm5
   - mheon
@@ -15,16 +17,17 @@ approvers:
   - saschagrunert
   - umohnani8
   - vrothberg
-  - zhangguanzhang
+  - ygalblum
 reviewers:
   - Luap99
-  - QiWang19
   - TomSweeneyRedHat
+  - alexlarsson
   - baude
   - cdoern
   - edsantiago
   - flouthoc
   - giuseppe
+  - jakecorrenti
   - jwhonce
   - lsm5
   - mheon
@@ -34,4 +37,4 @@ reviewers:
   - saschagrunert
   - umohnani8
   - vrothberg
-  - zhangguanzhang
+  - ygalblum

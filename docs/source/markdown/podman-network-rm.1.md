@@ -12,24 +12,22 @@ Delete one or more Podman networks.
 ## OPTIONS
 #### **--force**, **-f**
 
-The `force` option will remove all containers that use the named network. If the container is
-running, the container will be stopped and removed.
+The `force` option removes all containers that use the named network. If the container is
+running, the container is stopped and removed.
 
 #### **--time**, **-t**=*seconds*
 
-Seconds to wait before forcibly stopping the running containers that are using the specified network. The --force option must be specified to use the --time option.
+Seconds to wait before forcibly stopping the running containers that are using the specified network. The --force option must be specified to use the --time option. Use -1 for infinite wait.
 
 ## EXAMPLE
 
-Delete the `podman9` network
-
+Delete specified network:
 ```
 # podman network rm podman9
 Deleted: podman9
 ```
 
-Delete the `fred` network and all containers associated with the network.
-
+Delete specified network and all containers associated with the network:
 ```
 # podman network rm -f fred
 Deleted: fred

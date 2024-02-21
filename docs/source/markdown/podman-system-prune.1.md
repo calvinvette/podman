@@ -20,9 +20,9 @@ Recursively remove all unused pods, containers, images, networks, and volume dat
 
 #### **--external**
 
-Removes all leftover container storage files from local storage that are not managed by podman. In normal circumstances no such data should exist, but in case of an unclean shutdown the podman database may be corrupted and cause his.
+Removes all leftover container storage files from local storage not managed by Podman. In normal circumstances, no such data exists, but in case of an unclean shutdown, the Podman database may be corrupted and cause this.
 
-However, when using transient storage mode, the Podman database does not persist. This means containers will leave the writable layers on disk after a reboot. When using a transient store, it is recommended that the **podman system prune --external** command is run during boot.
+However, when using transient storage mode, the Podman database does not persist. This means containers leave the writable layers on disk after a reboot. When using a transient store, it is recommended that the **podman system prune --external** command is run during boot.
 
 This option is incompatible with **--all** and **--filter** and drops the default behaviour of removing unused resources.
 
@@ -34,10 +34,10 @@ The *filters* argument format is of `key=value`. If there is more than one *filt
 
 Supported filters:
 
-| Filter             | Description                                                                 |
-| :----------------: | --------------------------------------------------------------------------- |
-| *label*            | Only remove containers and images, with (or without, in the case of label!=[...] is used) the specified labels.                  |
-| *until*            | Only remove containers and images created before given timestamp.           |
+| Filter | Description                                                                                                     |
+|:------:|-----------------------------------------------------------------------------------------------------------------|
+| label  | Only remove containers and images, with (or without, in the case of label!=[...] is used) the specified labels. |
+| until  | Only remove containers and images created before given timestamp.                                               |
 
 The `label` *filter* accepts two formats. One is the `label`=*key* or `label`=*key*=*value*, which removes containers and images with the specified labels. The other format is the `label!`=*key* or `label!`=*key*=*value*, which removes containers and images without the specified labels.
 

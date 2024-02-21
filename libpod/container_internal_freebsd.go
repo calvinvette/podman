@@ -1,18 +1,18 @@
-//go:build freebsd
-// +build freebsd
+//go:build !remote
 
 package libpod
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/rootless"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/sirupsen/logrus"
@@ -193,15 +193,18 @@ func openDirectory(path string) (fd int, err error) {
 
 func (c *Container) addNetworkNamespace(g *generate.Generator) error {
 	if c.config.CreateNetNS {
-		if c.state.NetNS == "" {
-			// This should not happen since network setup
-			// errors should be propagated correctly from
-			// (*Runtime).createNetNS. Check for it anyway
-			// since it caused nil pointer dereferences in
-			// the past (see #16333).
-			return fmt.Errorf("Inconsistent state: c.config.CreateNetNS is set but c.state.NetNS is nil")
+		// If PostConfigureNetNS is set (which is true on FreeBSD 13.3
+		// and later), we can manage a container's network settings
+		// without an extra parent jail to own the vnew.
+		//
+		// In this case, the OCI runtime creates a new vnet for the
+		// container jail, otherwise it creates the container jail as a
+		// child of the jail owning the vnet.
+		if c.config.PostConfigureNetNS {
+			g.AddAnnotation("org.freebsd.jail.vnet", "new")
+		} else {
+			g.AddAnnotation("org.freebsd.parentJail", c.state.NetNS)
 		}
-		g.AddAnnotation("org.freebsd.parentJail", c.state.NetNS)
 	}
 	return nil
 }
@@ -251,7 +254,7 @@ func (c *Container) addSharedNamespaces(g *generate.Generator) error {
 	}
 	needEnv := true
 	for _, checkEnv := range g.Config.Process.Env {
-		if strings.SplitN(checkEnv, "=", 2)[0] == "HOSTNAME" {
+		if strings.HasPrefix(checkEnv, "HOSTNAME=") {
 			needEnv = false
 			break
 		}
@@ -280,8 +283,8 @@ func (c *Container) addSlirp4netnsDNS(nameservers []string) []string {
 	return nameservers
 }
 
-func (c *Container) isSlirp4netnsIPv6() (bool, error) {
-	return false, nil
+func (c *Container) isSlirp4netnsIPv6() bool {
+	return false
 }
 
 // check for net=none
@@ -309,10 +312,89 @@ func (c *Container) getConmonPidFd() int {
 	return -1
 }
 
-func (c *Container) jailName() string {
-	if c.state.NetNS != "" {
-		return c.state.NetNS + "." + c.ID()
+func (c *Container) jailName() (string, error) {
+	// If this container is in a pod, get the vnet name from the
+	// corresponding infra container
+	var ic *Container
+	if c.config.Pod != "" && c.config.Pod != c.ID() {
+		// Get the pod from state
+		pod, err := c.runtime.state.Pod(c.config.Pod)
+		if err != nil {
+			return "", fmt.Errorf("cannot find infra container for pod %s: %w", c.config.Pod, err)
+		}
+		ic, err = pod.InfraContainer()
+		if err != nil {
+			return "", fmt.Errorf("getting infra container for pod %s: %w", pod.ID(), err)
+		}
+		if ic.ID() != c.ID() {
+			ic.lock.Lock()
+			defer ic.lock.Unlock()
+			if err := ic.syncContainer(); err != nil {
+				return "", err
+			}
+		}
 	} else {
-		return c.ID()
+		ic = c
 	}
+
+	if ic.state.NetNS != "" {
+		return ic.state.NetNS + "." + c.ID(), nil
+	} else {
+		return c.ID(), nil
+	}
+}
+
+type safeMountInfo struct {
+	// mountPoint is the mount point.
+	mountPoint string
+}
+
+// Close releases the resources allocated with the safe mount info.
+func (s *safeMountInfo) Close() {
+}
+
+// safeMountSubPath securely mounts a subpath inside a volume to a new temporary location.
+// The function checks that the subpath is a valid subpath within the volume and that it
+// does not escape the boundaries of the mount point (volume).
+//
+// The caller is responsible for closing the file descriptor and unmounting the subpath
+// when it's no longer needed.
+func (c *Container) safeMountSubPath(mountPoint, subpath string) (s *safeMountInfo, err error) {
+	return &safeMountInfo{mountPoint: filepath.Join(mountPoint, subpath)}, nil
+}
+
+func (c *Container) makePlatformMtabLink(etcInTheContainerFd, rootUID, rootGID int) error {
+	// /etc/mtab does not exist on FreeBSD
+	return nil
+}
+
+func (c *Container) getPlatformRunPath() (string, error) {
+	// If we have a linux image, use "/run", otherwise use "/var/run" for
+	// consistency with FreeBSD path conventions.
+	runPath := "/var/run"
+	if c.config.RootfsImageID != "" {
+		image, _, err := c.runtime.libimageRuntime.LookupImage(c.config.RootfsImageID, nil)
+		if err != nil {
+			return "", err
+		}
+		inspectData, err := image.Inspect(nil, nil)
+		if err != nil {
+			return "", err
+		}
+		if inspectData.Os == "linux" {
+			runPath = "/run"
+		}
+	}
+	return runPath, nil
+}
+
+func (c *Container) addMaskedPaths(g *generate.Generator) {
+	// There are currently no FreeBSD-specific masked paths
+}
+
+func (c *Container) hasPrivateUTS() bool {
+	// Currently we always use a private UTS namespace on FreeBSD. This
+	// should be optional but needs a FreeBSD section in the OCI runtime
+	// specification.
+	return true
 }

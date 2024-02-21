@@ -1,27 +1,23 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	url2 "net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/containers/image/v5/pkg/compression"
-	"github.com/containers/storage/pkg/archive"
+	"github.com/containers/podman/v5/pkg/machine/compression"
+	"github.com/containers/podman/v5/pkg/machine/define"
+	"github.com/containers/podman/v5/pkg/machine/ocipull"
+	"github.com/containers/podman/v5/utils"
 	"github.com/sirupsen/logrus"
-	"github.com/ulikunitz/xz"
-	"github.com/vbauerster/mpb/v7"
-	"github.com/vbauerster/mpb/v7/decor"
 )
 
 // GenericDownload is used when a user provides a URL
@@ -31,7 +27,7 @@ type GenericDownload struct {
 }
 
 // NewGenericDownloader is used when the disk image is provided by the user
-func NewGenericDownloader(vmType, vmName, pullPath string) (DistributionDownload, error) {
+func NewGenericDownloader(vmType define.VMType, vmName, pullPath string) (DistributionDownload, error) {
 	var (
 		imageName string
 	)
@@ -45,11 +41,7 @@ func NewGenericDownloader(vmType, vmName, pullPath string) (DistributionDownload
 	}
 	dl := Download{}
 	// Is pullpath a file or url?
-	getURL, err := url2.Parse(pullPath)
-	if err != nil {
-		return nil, err
-	}
-	if len(getURL.Scheme) > 0 {
+	if getURL := supportedURL(pullPath); getURL != nil {
 		urlSplit := strings.Split(getURL.Path, "/")
 		imageName = urlSplit[len(urlSplit)-1]
 		dl.URL = getURL
@@ -61,27 +53,40 @@ func NewGenericDownloader(vmType, vmName, pullPath string) (DistributionDownload
 	}
 	dl.VMName = vmName
 	dl.ImageName = imageName
-	dl.LocalUncompressedFile = filepath.Join(dataDir, imageName)
+	dl.LocalUncompressedFile = dl.GetLocalUncompressedFile(dataDir)
 	// The download needs to be pulled into the datadir
 
 	gd := GenericDownload{Download: dl}
 	return gd, nil
 }
 
-func (d Download) getLocalUncompressedFile(dataDir string) string {
-	var (
-		extension string
-	)
-	switch {
-	case strings.HasSuffix(d.LocalPath, ".bz2"):
-		extension = ".bz2"
-	case strings.HasSuffix(d.LocalPath, ".gz"):
-		extension = ".gz"
-	case strings.HasSuffix(d.LocalPath, ".xz"):
-		extension = ".xz"
+func supportedURL(path string) (url *url2.URL) {
+	getURL, err := url2.Parse(path)
+	if err != nil {
+		// ignore error, probably not a URL, fallback & treat as file path
+		return nil
 	}
-	uncompressedFilename := d.VMName + "_" + d.ImageName
-	return filepath.Join(dataDir, strings.TrimSuffix(uncompressedFilename, extension))
+
+	// Check supported scheme. Since URL is passed to net.http, only http
+	// schemes are supported. Also, windows drive paths can resemble a
+	// URL, but with a single letter scheme. These values should be
+	// passed through for interpretation as a file path.
+	switch getURL.Scheme {
+	case "http":
+		fallthrough
+	case "https":
+		return getURL
+	default:
+		return nil
+	}
+}
+
+func (dl Download) GetLocalUncompressedFile(dataDir string) string {
+	compressedFilename := dl.VMName + "_" + dl.ImageName
+	extension := compression.KindFromFile(compressedFilename)
+	uncompressedFile := strings.TrimSuffix(compressedFilename, fmt.Sprintf(".%s", extension.String()))
+	dl.LocalUncompressedFile = filepath.Join(dataDir, uncompressedFile)
+	return dl.LocalUncompressedFile
 }
 
 func (g GenericDownload) Get() *Download {
@@ -122,7 +127,11 @@ func DownloadImage(d DistributionDownload) error {
 			}
 		}()
 	}
-	return Decompress(d.Get().LocalPath, d.Get().LocalUncompressedFile)
+	localPath, err := define.NewMachineFile(d.Get().LocalPath, nil)
+	if err != nil {
+		return err
+	}
+	return compression.Decompress(localPath, d.Get().LocalUncompressedFile)
 }
 
 // DownloadVMImage downloads a VM image from url to given path
@@ -155,20 +164,7 @@ func DownloadVMImage(downloadURL *url2.URL, imageName string, localImagePath str
 	prefix := "Downloading VM image: " + imageName
 	onComplete := prefix + ": done"
 
-	p := mpb.New(
-		mpb.WithWidth(60),
-		mpb.WithRefreshRate(180*time.Millisecond),
-	)
-
-	bar := p.AddBar(size,
-		mpb.BarFillerClearOnComplete(),
-		mpb.PrependDecorators(
-			decor.OnComplete(decor.Name(prefix), onComplete),
-		),
-		mpb.AppendDecorators(
-			decor.OnComplete(decor.CountersKibiByte("%.1f / %.1f"), ""),
-		),
-	)
+	p, bar := utils.ProgressBar(prefix, size, onComplete)
 
 	proxyReader := bar.ProxyReader(resp.Body)
 	defer func() {
@@ -185,95 +181,7 @@ func DownloadVMImage(downloadURL *url2.URL, imageName string, localImagePath str
 	return nil
 }
 
-func Decompress(localPath, uncompressedPath string) error {
-	uncompressedFileWriter, err := os.OpenFile(uncompressedPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return err
-	}
-	sourceFile, err := os.ReadFile(localPath)
-	if err != nil {
-		return err
-	}
-
-	compressionType := archive.DetectCompression(sourceFile)
-	if compressionType != archive.Uncompressed {
-		fmt.Println("Extracting compressed file")
-	}
-	if compressionType == archive.Xz {
-		return decompressXZ(localPath, uncompressedFileWriter)
-	}
-	return decompressEverythingElse(localPath, uncompressedFileWriter)
-}
-
-// Will error out if file without .xz already exists
-// Maybe extracting then renaming is a good idea here..
-// depends on xz: not pre-installed on mac, so it becomes a brew dependency
-func decompressXZ(src string, output io.WriteCloser) error {
-	var read io.Reader
-	var cmd *exec.Cmd
-	// Prefer xz utils for fastest performance, fallback to go xi2 impl
-	if _, err := exec.LookPath("xz"); err == nil {
-		cmd = exec.Command("xz", "-d", "-c", "-k", src)
-		read, err = cmd.StdoutPipe()
-		if err != nil {
-			return err
-		}
-		cmd.Stderr = os.Stderr
-	} else {
-		file, err := os.Open(src)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		// This XZ implementation is reliant on buffering. It is also 3x+ slower than XZ utils.
-		// Consider replacing with a faster implementation (e.g. xi2) if podman machine is
-		// updated with a larger image for the distribution base.
-		buf := bufio.NewReader(file)
-		read, err = xz.NewReader(buf)
-		if err != nil {
-			return err
-		}
-	}
-
-	done := make(chan bool)
-	go func() {
-		if _, err := io.Copy(output, read); err != nil {
-			logrus.Error(err)
-		}
-		output.Close()
-		done <- true
-	}()
-
-	if cmd != nil {
-		return cmd.Run()
-	}
-	<-done
-	return nil
-}
-
-func decompressEverythingElse(src string, output io.WriteCloser) error {
-	f, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	uncompressStream, _, err := compression.AutoDecompress(f)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := uncompressStream.Close(); err != nil {
-			logrus.Error(err)
-		}
-		if err := output.Close(); err != nil {
-			logrus.Error(err)
-		}
-	}()
-
-	_, err = io.Copy(output, uncompressStream)
-	return err
-}
-
-func removeImageAfterExpire(dir string, expire time.Duration) error {
+func RemoveImageAfterExpire(dir string, expire time.Duration) error {
 	now := time.Now()
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		// Delete any cache files that are older than expiry date
@@ -288,4 +196,38 @@ func removeImageAfterExpire(dir string, expire time.Duration) error {
 		return nil
 	})
 	return err
+}
+
+// AcquireAlternateImage downloads the alternate image the user provided, which
+// can be a file path or URL
+func (dl Download) AcquireAlternateImage(inputPath string) (*define.VMFile, error) {
+	g, err := NewGenericDownloader(dl.VMKind, dl.VMName, inputPath)
+	if err != nil {
+		return nil, err
+	}
+
+	imagePath, err := define.NewMachineFile(g.Get().LocalUncompressedFile, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := DownloadImage(g); err != nil {
+		return nil, err
+	}
+
+	return imagePath, nil
+}
+
+func isOci(input string) (bool, *ocipull.OCIKind, error) { //nolint:unused
+	inputURL, err := url2.Parse(input)
+	if err != nil {
+		return false, nil, err
+	}
+	switch inputURL.Scheme {
+	case ocipull.OCIDir.String():
+		return true, &ocipull.OCIDir, nil
+	case ocipull.OCIRegistry.String():
+		return true, &ocipull.OCIRegistry, nil
+	}
+	return false, nil, nil
 }

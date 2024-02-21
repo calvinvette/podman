@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/containers/common/pkg/ssh"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -15,11 +15,10 @@ var (
 	imageScpCommand    = &cobra.Command{
 		Use: "scp [options] IMAGE [HOST::]",
 		Annotations: map[string]string{
-			registry.UnshareNSRequired: "",
-			registry.ParentNSRequired:  "",
+			registry.ParentNSRequired: "",
 		},
 		Long:              saveScpDescription,
-		Short:             "securely copy images",
+		Short:             "Securely copy images",
 		RunE:              scp,
 		Args:              cobra.RangeArgs(1, 2),
 		ValidArgsFunction: common.AutocompleteScp,

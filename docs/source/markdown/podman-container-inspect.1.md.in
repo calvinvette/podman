@@ -8,8 +8,8 @@ podman\-container\-inspect - Display a container's configuration
 
 ## DESCRIPTION
 
-This displays the low-level information on containers identified by name or ID. By default, this will render
-all results in a JSON array. If a format is specified, the given template will be executed for each result.
+This displays the low-level information on containers identified by name or ID. By default, this renders
+all results in a JSON array. If a format is specified, the given template is executed for each result.
 
 ## OPTIONS
 
@@ -20,45 +20,48 @@ The keys of the returned JSON can be used as the values for the --format flag (s
 
 Valid placeholders for the Go template are listed below:
 
-| **Placeholder**      | **Description**                                    |
-| -----------------    | ------------------                                 |
-| .AppArmorProfile     | AppArmor profile (string)                          |
-| .Args                | Command-line arguments (array of strings)          |
-| .BoundingCaps        | Bounding capability set (array of strings)         |
-| .Config ...          | Structure with config info                         |
-| .ConmonPidFile       | Path to file containing conmon pid (string)        |
-| .Created             | Container creation time (string, ISO3601)          |
-| .Dependencies        | Dependencies (array of strings)                    |
-| .Driver              | Storage driver (string)                            |
-| .EffectiveCaps       | Effective capability set (array of strings)        |
-| .ExecIDs             | Exec IDs (array of strings)                        |
-| .GraphDriver ...     | Further details of graph driver (struct)           |
-| .HostConfig ...      | Host config details (struct)                       |
-| .HostnamePath        | Path to file containing hostname (string)          |
-| .HostsPath           | Path to container /etc/hosts file (string)         |
-| .ID                  | Container ID (full 64-char hash)                   |
-| .Image               | Container image ID (64-char hash)                  |
-| .ImageName           | Container image name (string)                      |
-| .IsInfra             | Is this an infra container? (string: true/false)   |
-| .IsService           | Is this a service container? (string: true/false)  |
-| .MountLabel          | SELinux label of mount (string)                    |
-| .Mounts              | Mounts (array of strings)                          |
-| .Name                | Container name (string)                            |
-| .Namespace           | Container namespace (string)                       |
-| .NetworkSettings ... | Network settings (struct)                          |
-| .OCIConfigPath       | Path to OCI config file (string)                   |
-| .OCIRuntime          | OCI runtime name (string)                          |
-| .Path                | Path to container command (string)                 |
-| .PidFile             | Path to file containing container PID (string)     |
-| .Pod                 | Parent pod (string)                                |
-| .ProcessLabel        | SELinux label of process (string)                  |
-| .ResolvConfPath      | Path to container's resolv.conf file (string)      |
-| .RestartCount        | Number of times container has been restarted (int) |
-| .Rootfs              | Container rootfs (string)                          |
-| .SizeRootFs          | Size of rootfs, in bytes [1]                       |
-| .SizeRw              | Size of upper (R/W) container layer, in bytes [1]  |
-| .State ...           | Container state info (struct)                      |
-| .StaticDir           | Path to container metadata dir (string)            |
+| **Placeholder**          | **Description**                                    |
+| ------------------------ | -------------------------------------------------- |
+| .AppArmorProfile         | AppArmor profile (string)                          |
+| .Args                    | Command-line arguments (array of strings)          |
+| .BoundingCaps            | Bounding capability set (array of strings)         |
+| .Config ...              | Structure with config info                         |
+| .ConmonPidFile           | Path to file containing conmon pid (string)        |
+| .Created ...             | Container creation time (string, ISO3601)          |
+| .Dependencies            | Dependencies (array of strings)                    |
+| .Driver                  | Storage driver (string)                            |
+| .EffectiveCaps           | Effective capability set (array of strings)        |
+| .ExecIDs                 | Exec IDs (array of strings)                        |
+| .GraphDriver ...         | Further details of graph driver (struct)           |
+| .HostConfig ...          | Host config details (struct)                       |
+| .HostnamePath            | Path to file containing hostname (string)          |
+| .HostsPath               | Path to container /etc/hosts file (string)         |
+| .ID                      | Container ID (full 64-char hash)                   |
+| .Image                   | Container image ID (64-char hash)                  |
+| .ImageDigest             | Container image digest (sha256:+64-char hash)      |
+| .ImageName               | Container image name (string)                      |
+| .IsInfra                 | Is this an infra container? (string: true/false)   |
+| .IsService               | Is this a service container? (string: true/false)  |
+| .KubeExitCodePropagation | Kube exit-code propagation (string)                |
+| .LockNumber              | Number of the container's Libpod lock              |
+| .MountLabel              | SELinux label of mount (string)                    |
+| .Mounts                  | Mounts (array of strings)                          |
+| .Name                    | Container name (string)                            |
+| .Namespace               | Container namespace (string)                       |
+| .NetworkSettings ...     | Network settings (struct)                          |
+| .OCIConfigPath           | Path to OCI config file (string)                   |
+| .OCIRuntime              | OCI runtime name (string)                          |
+| .Path                    | Path to container command (string)                 |
+| .PidFile                 | Path to file containing container PID (string)     |
+| .Pod                     | Parent pod (string)                                |
+| .ProcessLabel            | SELinux label of process (string)                  |
+| .ResolvConfPath          | Path to container's resolv.conf file (string)      |
+| .RestartCount            | Number of times container has been restarted (int) |
+| .Rootfs                  | Container rootfs (string)                          |
+| .SizeRootFs              | Size of rootfs, in bytes [1]                       |
+| .SizeRw                  | Size of upper (R/W) container layer, in bytes [1]  |
+| .State ...               | Container state info (struct)                      |
+| .StaticDir               | Path to container metadata dir (string)            |
 
 [1] This format specifier requires the **--size** option
 
@@ -71,6 +74,7 @@ In addition to normal output, display the total file size if the type is a conta
 
 ## EXAMPLE
 
+Inspect the specified container and print its information in json format.
 ```
 $ podman container inspect foobar
 [
@@ -302,16 +306,19 @@ $ podman container inspect foobar
 ]
 ```
 
+Inspect the specified container for the Image Name it is based on.
 ```
 $ podman container inspect nervous_fermi --format "{{.ImageName}}"
 registry.access.redhat.com/ubi8:latest
 ```
 
+Inspect the specified container for the GraphDriver Name it is running with.
 ```
 $ podman container inspect foobar --format "{{.GraphDriver.Name}}"
 overlay
 ```
 
+Inspect the latest container created for its EffectiveCaps field. (This option is not available with the remote Podman client, including Mac and Windows (excluding WSL2) machines)
 ```
 $ podman container inspect --latest --format {{.EffectiveCaps}}
 [CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_KILL CAP_NET_BIND_SERVICE CAP_SETFCAP CAP_SETGID CAP_SETPCAP CAP_SETUID]

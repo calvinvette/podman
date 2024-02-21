@@ -30,7 +30,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containers/podman/v4/pkg/k8s.io/apimachinery/pkg/types"
+	"github.com/containers/podman/v5/pkg/k8s.io/apimachinery/pkg/types"
 )
 
 // TypeMeta describes an individual object in an API response or request
@@ -928,6 +928,18 @@ const (
 	// is newer than the data observed by the API server, so the request cannot be served.
 	CauseTypeResourceVersionTooLarge CauseType = "ResourceVersionTooLarge"
 )
+
+// List holds a list of objects, which may not be known by the server.
+type List struct {
+	TypeMeta `json:",inline"`
+	// Standard list metadata.
+	// More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+	// +optional
+	ListMeta `json:"metadata,omitempty"`
+
+	// List of objects
+	Items []interface{} `json:"items"`
+}
 
 // APIVersions lists the versions that are available, to allow clients to
 // discover the API at /api, which is the root path of the legacy v1 API.

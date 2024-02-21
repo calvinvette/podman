@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -5,11 +7,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/driver"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/driver"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage/types"
-	units "github.com/docker/go-units"
+	"github.com/docker/go-units"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -51,8 +53,8 @@ func (c *Container) volumesFrom() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ctrs, ok := ctrSpec.Annotations[define.InspectAnnotationVolumesFrom]; ok {
-		return strings.Split(ctrs, ","), nil
+	if ctrs, ok := ctrSpec.Annotations[define.VolumesFromAnnotation]; ok {
+		return strings.Split(ctrs, ";"), nil
 	}
 	return nil, nil
 }
@@ -129,7 +131,7 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 			Pid:            runtimeInfo.PID,
 			ConmonPid:      runtimeInfo.ConmonPID,
 			ExitCode:       runtimeInfo.ExitCode,
-			Error:          "", // can't get yet
+			Error:          runtimeInfo.Error,
 			StartedAt:      runtimeInfo.StartedTime,
 			FinishedAt:     runtimeInfo.FinishedTime,
 			Checkpointed:   runtimeInfo.Checkpointed,
@@ -140,31 +142,34 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 			CheckpointPath: runtimeInfo.CheckpointPath,
 			CheckpointLog:  runtimeInfo.CheckpointLog,
 			RestoreLog:     runtimeInfo.RestoreLog,
+			StoppedByUser:  c.state.StoppedByUser,
 		},
-		Image:           config.RootfsImageID,
-		ImageName:       config.RootfsImageName,
-		Namespace:       config.Namespace,
-		Rootfs:          config.Rootfs,
-		Pod:             config.Pod,
-		ResolvConfPath:  resolvPath,
-		HostnamePath:    hostnamePath,
-		HostsPath:       hostsPath,
-		StaticDir:       config.StaticDir,
-		OCIRuntime:      config.OCIRuntime,
-		ConmonPidFile:   config.ConmonPidFile,
-		PidFile:         config.PidFile,
-		Name:            config.Name,
-		RestartCount:    int32(runtimeInfo.RestartCount),
-		Driver:          driverData.Name,
-		MountLabel:      config.MountLabel,
-		ProcessLabel:    config.ProcessLabel,
-		AppArmorProfile: ctrSpec.Process.ApparmorProfile,
-		ExecIDs:         execIDs,
-		GraphDriver:     driverData,
-		Mounts:          inspectMounts,
-		Dependencies:    c.Dependencies(),
-		IsInfra:         c.IsInfra(),
-		IsService:       c.IsService(),
+		Image:                   config.RootfsImageID,
+		ImageName:               config.RootfsImageName,
+		Namespace:               config.Namespace,
+		Rootfs:                  config.Rootfs,
+		Pod:                     config.Pod,
+		ResolvConfPath:          resolvPath,
+		HostnamePath:            hostnamePath,
+		HostsPath:               hostsPath,
+		StaticDir:               config.StaticDir,
+		OCIRuntime:              config.OCIRuntime,
+		ConmonPidFile:           config.ConmonPidFile,
+		PidFile:                 config.PidFile,
+		Name:                    config.Name,
+		RestartCount:            int32(runtimeInfo.RestartCount),
+		Driver:                  driverData.Name,
+		MountLabel:              config.MountLabel,
+		ProcessLabel:            config.ProcessLabel,
+		AppArmorProfile:         ctrSpec.Process.ApparmorProfile,
+		ExecIDs:                 execIDs,
+		GraphDriver:             driverData,
+		Mounts:                  inspectMounts,
+		Dependencies:            c.Dependencies(),
+		IsInfra:                 c.IsInfra(),
+		IsService:               c.IsService(),
+		KubeExitCodePropagation: config.KubeExitCodePropagation.String(),
+		LockNumber:              c.lock.ID(),
 	}
 
 	if config.RootfsImageID != "" { // May not be set if the container was created with --rootfs
@@ -184,15 +189,20 @@ func (c *Container) getContainerInspectData(size bool, driverData *define.Driver
 		data.OCIConfigPath = c.state.ConfigPath
 	}
 
-	if c.config.HealthCheckConfig != nil {
-		// This container has a healthcheck defined in it; we need to add it's state
+	// Check if healthcheck is not nil and --no-healthcheck option is not set.
+	// If --no-healthcheck is set Test will be always set to `[NONE]`, so the
+	// inspect status should be set to nil.
+	if c.config.HealthCheckConfig != nil && !(len(c.config.HealthCheckConfig.Test) == 1 && c.config.HealthCheckConfig.Test[0] == "NONE") {
+		// This container has a healthcheck defined in it; we need to add its state
 		healthCheckState, err := c.getHealthCheckLog()
 		if err != nil {
 			// An error here is not considered fatal; no health state will be displayed
 			logrus.Error(err)
 		} else {
-			data.State.Health = healthCheckState
+			data.State.Health = &healthCheckState
 		}
+	} else {
+		data.State.Health = nil
 	}
 
 	networkConfig, err := c.getContainerNetworkInfo()
@@ -275,12 +285,12 @@ func (c *Container) GetMounts(namedVolumes []*ContainerNamedVolume, imageVolumes
 	for _, mount := range mounts {
 		// It's a mount.
 		// Is it a tmpfs? If so, discard.
-		if mount.Type == "tmpfs" {
+		if mount.Type == define.TypeTmpfs {
 			continue
 		}
 
 		mountStruct := define.InspectMount{}
-		mountStruct.Type = "bind"
+		mountStruct.Type = define.TypeBind
 		mountStruct.Source = mount.Source
 		mountStruct.Destination = mount.Destination
 
@@ -310,6 +320,10 @@ func (c *Container) GetSecurityOptions() []string {
 	if apparmor, ok := ctrSpec.Annotations[define.InspectAnnotationApparmor]; ok {
 		SecurityOpt = append(SecurityOpt, fmt.Sprintf("apparmor=%s", apparmor))
 	}
+	if c.config.Spec != nil && c.config.Spec.Linux != nil && c.config.Spec.Linux.MaskedPaths == nil {
+		SecurityOpt = append(SecurityOpt, "unmask=all")
+	}
+
 	return SecurityOpt
 }
 
@@ -496,14 +510,17 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 		if ctrSpec.Annotations[define.InspectAnnotationAutoremove] == define.InspectResponseTrue {
 			hostConfig.AutoRemove = true
 		}
-		if ctrs, ok := ctrSpec.Annotations[define.InspectAnnotationVolumesFrom]; ok {
-			hostConfig.VolumesFrom = strings.Split(ctrs, ",")
+		if ctrs, ok := ctrSpec.Annotations[define.VolumesFromAnnotation]; ok {
+			hostConfig.VolumesFrom = strings.Split(ctrs, ";")
 		}
 		if ctrSpec.Annotations[define.InspectAnnotationPrivileged] == define.InspectResponseTrue {
 			hostConfig.Privileged = true
 		}
 		if ctrSpec.Annotations[define.InspectAnnotationInit] == define.InspectResponseTrue {
 			hostConfig.Init = true
+		}
+		if ctrSpec.Annotations[define.InspectAnnotationPublishAll] == define.InspectResponseTrue {
+			hostConfig.PublishAllPorts = true
 		}
 	}
 
@@ -532,7 +549,7 @@ func (c *Container) generateInspectContainerHostConfig(ctrSpec *spec.Spec, named
 		}
 	}
 	for _, mount := range mounts {
-		if mount.Type == "tmpfs" {
+		if mount.Type == define.TypeTmpfs {
 			tmpfs[mount.Destination] = strings.Join(mount.Options, ",")
 		} else {
 			// TODO - maybe we should parse for empty source/destination

@@ -30,10 +30,10 @@ on:
 
 env:
     # CSV listing of e-mail addresses for delivery failure or error notices
-    RCPTCSV: rh.container.bot@gmail.com,podman-monitor@lists.podman.io
-    # Filename for table of cron-name to build-id data
+    RCPTCSV: podman-monitor@lists.podman.io
+    # Filename for table of build-id to cron-name data
     # (must be in $GITHUB_WORKSPACE/artifacts/)
-    NAME_ID_FILEPATH: './artifacts/name_id.txt'
+    ID_NAME_FILEPATH: './artifacts/id_name.txt'
 
 permissions:
   contents: read
@@ -42,7 +42,7 @@ jobs:
     cron_rerun:
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v3
+            - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
               with:
                   # All scripts used by this workflow live in podman repo.
                   repository: "containers/podman"
@@ -59,14 +59,14 @@ jobs:
                 SECRET_CIRRUS_API_KEY: ${{ secrets.SECRET_CIRRUS_API_KEY }}
               run: './.github/actions/check_cirrus_cron/rerun_failed_tasks.sh'
 
-            - uses: actions/upload-artifact@82c141cc518b40d92cc801eee768e7aafc9c2fa2 # v2
+            - uses: actions/upload-artifact@v4
               with:
                   name: ${{ github.job }}_artifacts
                   path: artifacts/*
 
             - if: failure()
               name: Send error notification e-mail
-              uses: dawidd6/action-send-mail@v3.7.1
+              uses: dawidd6/action-send-mail@v3.11.0
               with:
                 server_address: ${{secrets.ACTION_MAIL_SERVER}}
                 server_port: 465

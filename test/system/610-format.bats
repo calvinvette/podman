@@ -25,6 +25,8 @@ history           | $IMAGE
 image history     | $IMAGE
 image inspect     | $IMAGE
 container inspect | mycontainer
+inspect           | mycontainer
+
 
 volume inspect    | -a
 secret inspect    | mysecret
@@ -53,6 +55,12 @@ can_run_stats=
 #        > run the command with --format '{{"\n"}}' and make sure it passes
 function check_subcommand() {
     for cmd in $(_podman_commands "$@"); do
+        # Skip the compose command which is calling `docker-compose --help`
+        # and hence won't match the assumptions made below.
+        if [[ "$cmd" == "compose" ]]; then
+            continue
+        fi
+        # Human-readable podman command string, with multiple spaces collapsed
         # Special case: 'podman machine' can only be run under ideal conditions
         if [[ "$cmd" = "machine" ]] && [[ -z "$can_run_podman_machine" ]]; then
             continue

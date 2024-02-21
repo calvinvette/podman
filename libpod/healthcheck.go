@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -10,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
@@ -60,6 +63,7 @@ func (c *Container) runHealthCheck(ctx context.Context, isStartup bool) (define.
 		returnCode    int
 		inStartPeriod bool
 	)
+
 	hcCommand := c.HealthCheckConfig().Test
 	if isStartup {
 		logrus.Debugf("Running startup healthcheck for container %s", c.ID())
@@ -162,10 +166,17 @@ func (c *Container) runHealthCheck(ctx context.Context, isStartup bool) (define.
 	}
 
 	hcl := newHealthCheckLog(timeStart, timeEnd, returnCode, eventLog)
-	logStatus, err := c.updateHealthCheckLog(hcl, inStartPeriod)
+	logStatus, err := c.updateHealthCheckLog(hcl, inStartPeriod, isStartup)
 	if err != nil {
 		return hcResult, "", fmt.Errorf("unable to update health check log %s for %s: %w", c.healthCheckLogPath(), c.ID(), err)
 	}
+
+	// Write HC event with appropriate status as the last thing before we
+	// return.
+	if hcResult == define.HealthCheckNotDefined || hcResult == define.HealthCheckInternalError {
+		return hcResult, logStatus, hcErr
+	}
+	c.newContainerEvent(events.HealthStatus)
 
 	return hcResult, logStatus, hcErr
 }
@@ -184,8 +195,12 @@ func (c *Container) processHealthCheckStatus(status string) error {
 		}
 
 	case define.HealthCheckOnFailureActionRestart:
-		if err := c.RestartWithTimeout(context.Background(), c.config.StopTimeout); err != nil {
-			return fmt.Errorf("restarting container after health-check turned unhealthy: %w", err)
+		// We let the cleanup process handle the restart.  Otherwise
+		// the container would be restarted in the context of a
+		// transient systemd unit which may cause undesired side
+		// effects.
+		if err := c.Stop(); err != nil {
+			return fmt.Errorf("restarting/stopping container after health-check turned unhealthy: %w", err)
 		}
 
 	case define.HealthCheckOnFailureActionStop:
@@ -346,10 +361,29 @@ func (c *Container) updateHealthStatus(status string) error {
 	return os.WriteFile(c.healthCheckLogPath(), newResults, 0700)
 }
 
+// isUnhealthy returns true if the current health check status is unhealthy.
+func (c *Container) isUnhealthy() (bool, error) {
+	if !c.HasHealthCheck() {
+		return false, nil
+	}
+	healthCheck, err := c.getHealthCheckLog()
+	if err != nil {
+		return false, err
+	}
+	return healthCheck.Status == define.HealthCheckUnhealthy, nil
+}
+
 // UpdateHealthCheckLog parses the health check results and writes the log
-func (c *Container) updateHealthCheckLog(hcl define.HealthCheckLog, inStartPeriod bool) (string, error) {
+func (c *Container) updateHealthCheckLog(hcl define.HealthCheckLog, inStartPeriod, isStartup bool) (string, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	// If we are playing a kube yaml then let's honor the start period time for
+	// both failing and succeeding cases to match kube behavior.
+	// So don't update the health check log till the start period is over
+	if _, ok := c.config.Spec.Annotations[define.KubeHealthCheckAnnotation]; ok && inStartPeriod && !isStartup {
+		return "", nil
+	}
 
 	healthCheck, err := c.getHealthCheckLog()
 	if err != nil {
@@ -407,10 +441,13 @@ func (c *Container) getHealthCheckLog() (define.HealthCheckResults, error) {
 	return healthCheck, nil
 }
 
-// HealthCheckStatus returns the current state of a container with a healthcheck
+// HealthCheckStatus returns the current state of a container with a healthcheck.
+// Returns an empty string if no health check is defined for the container.
 func (c *Container) HealthCheckStatus() (string, error) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	if !c.batched {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+	}
 	return c.healthCheckStatus()
 }
 
@@ -418,7 +455,7 @@ func (c *Container) HealthCheckStatus() (string, error) {
 // This function does not lock the container.
 func (c *Container) healthCheckStatus() (string, error) {
 	if !c.HasHealthCheck() {
-		return "", fmt.Errorf("container %s has no defined healthcheck", c.ID())
+		return "", nil
 	}
 
 	if err := c.syncContainer(); err != nil {

@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package util
 
@@ -30,14 +29,8 @@ func GetRootlessPauseProcessPidPath() (string, error) {
 	return "", fmt.Errorf("GetRootlessPauseProcessPidPath: %w", errNotImplemented)
 }
 
-// GetRootlessPauseProcessPidPath returns the path to the file that holds the pid for
-// the pause process
-func GetRootlessPauseProcessPidPathGivenDir(unused string) (string, error) {
-	return "", fmt.Errorf("GetRootlessPauseProcessPidPath: %w", errNotImplemented)
-}
-
-// GetRuntimeDir returns the runtime directory
-func GetRuntimeDir() (string, error) {
+// GetRootlessRuntimeDir returns the runtime directory
+func GetRootlessRuntimeDir() (string, error) {
 	data, err := homedir.GetDataHome()
 	if err != nil {
 		return "", err

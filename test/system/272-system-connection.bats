@@ -51,7 +51,7 @@ function _run_podman_remote() {
 # Very basic test, does not actually connect at any time
 @test "podman system connection - basic add / ls / remove" {
     run_podman system connection ls
-    is "$output" "Name        URI         Identity    Default" \
+    is "$output" "Name        URI         Identity    Default     ReadWrite" \
        "system connection ls: no connections"
 
     c1="c1_$(random_string 15)"
@@ -61,8 +61,8 @@ function _run_podman_remote() {
     run_podman context create --docker "host=tcp://localhost:54321" $c2
     run_podman system connection ls
     is "$output" \
-       ".*$c1[ ]\+tcp://localhost:12345[ ]\+true
-$c2[ ]\+tcp://localhost:54321[ ]\+false" \
+       ".*$c1[ ]\+tcp://localhost:12345[ ]\+true[ ]\+true
+$c2[ ]\+tcp://localhost:54321[ ]\+false[ ]\+true" \
        "system connection ls"
     run_podman system connection ls -q
     is "$(echo $(sort <<<$output))" \
@@ -75,14 +75,14 @@ $c2[ ]\+tcp://localhost:54321[ ]\+false" \
     run_podman context use $c2
     run_podman system connection ls
     is "$output" \
-       ".*$c1[ ]\+tcp://localhost:12345[ ]\+false
-$c2[ ]\+tcp://localhost:54321[ ]\+true" \
+       ".*$c1[ ]\+tcp://localhost:12345[ ]\+false[ ]\+true
+$c2[ ]\+tcp://localhost:54321[ ]\+true[ ]\+true" \
        "system connection ls"
 
     # Remove default connection; the remaining one should still not be default
     run_podman system connection rm $c2
     run_podman context ls
-    is "$output" ".*$c1[ ]\+tcp://localhost:12345[ ]\+false" \
+    is "$output" ".*$c1[ ]\+tcp://localhost:12345[ ]\+false[ ]\+true" \
        "system connection ls (after removing default connection)"
 
     run_podman context rm $c1
@@ -102,18 +102,17 @@ $c2[ ]\+tcp://localhost:54321[ ]\+true" \
     # when invoking podman.
     _run_podman_remote 125 info
     is "$output" \
-       "Cannot connect to Podman. Please verify.*dial tcp.*connection refused" \
+       "OS: .*provider:.*Cannot connect to Podman. Please verify.*dial tcp.*connection refused" \
        "podman info, without active service"
 
     # Start service. Now podman info should work fine. The %%-remote*
     # converts "podman-remote --opts" to just "podman", which is what
     # we need for the server.
-    ${PODMAN%%-remote*} --root ${PODMAN_TMPDIR}/root \
-                        --runroot ${PODMAN_TMPDIR}/runroot \
+    ${PODMAN%%-remote*} $(podman_isolation_opts ${PODMAN_TMPDIR}) \
                         system service -t 99 tcp://localhost:$_SERVICE_PORT &
     _SERVICE_PID=$!
     # Wait for the port and the podman-service to be ready.
-    wait_for_port localhost $_SERVICE_PORT
+    wait_for_port 127.0.0.1 $_SERVICE_PORT
     local timeout=10
     while [[ $timeout -gt 1 ]]; do
         _run_podman_remote '?' info --format '{{.Host.RemoteSocket.Path}}'
@@ -178,6 +177,78 @@ $c2[ ]\+tcp://localhost:54321[ ]\+true" \
 
     # Clean up
     run_podman system connection rm mysshconn
+}
+
+@test "podman-remote: non-default connection" {
+    # priority:
+    #   1. cli flags (--connection ,--url ,--context ,--host)
+    #   2. Env variables (CONTAINER_HOST and CONTAINER_CONNECTION)
+    #   3. ActiveService from containers.conf
+    #   4. RemoteURI
+
+    # Prerequisite check: there must be no defined system connections
+    run_podman system connection ls -q
+    assert "$output" = "" "This test requires an empty list of system connections"
+
+    # setup
+    run_podman 0+w system connection add defaultconnection unix:///run/user/defaultconnection/podman/podman.sock
+    run_podman 0+w system connection add env-override unix:///run/user/env-override/podman/podman.sock
+    run_podman 0+w system connection add cli-override unix:///run/user/cli-override/podman/podman.sock
+
+    # Test priority of Env variables wrt cli flags
+    CONTAINER_CONNECTION=env-override _run_podman_remote 125 --connection=cli-override ps
+    assert "$output" =~ "/run/user/cli-override/podman/podman.sock" "test env variable CONTAINER_CONNECTION wrt --connection cli flag"
+
+    CONTAINER_HOST=foo://124.com _run_podman_remote 125 --connection=cli-override ps
+    assert "$output" =~ "/run/user/cli-override/podman/podman.sock" "test env variable CONTAINER_HOST wrt --connection cli flag"
+
+    CONTAINER_CONNECTION=env-override _run_podman_remote 125 --url=tcp://localhost ps
+    assert "$output" =~ "localhost" "test env variable CONTAINER_CONNECTION wrt --url cli flag"
+
+    CONTAINER_HOST=foo://124.com _run_podman_remote 125 --url=tcp://localhost ps
+    assert "$output" =~ "localhost" "test env variable CONTAINER_HOST wrt --url cli flag"
+
+    # Docker-compat
+    CONTAINER_CONNECTION=env-override _run_podman_remote 125 --context=cli-override ps
+    assert "$output" =~ "/run/user/cli-override/podman/podman.sock" "test env variable CONTAINER_CONNECTION wrt --context cli flag"
+
+    CONTAINER_HOST=foo://124.com _run_podman_remote 125 --context=cli-override ps
+    assert "$output" =~ "/run/user/cli-override/podman/podman.sock" "test env variable CONTAINER_HOST wrt --context cli flag"
+
+    CONTAINER_CONNECTION=env-override _run_podman_remote 125 --host=tcp://localhost ps
+    assert "$output" =~ "localhost" "test env variable CONTAINER_CONNECTION wrt --host cli flag"
+
+    CONTAINER_HOST=foo://124.com _run_podman_remote 125 --host=tcp://localhost ps
+    assert "$output" =~ "localhost" "test env variable CONTAINER_HOST wrt --host cli flag"
+
+    _run_podman_remote 125 --remote ps
+    assert "$output" =~ "/run/user/defaultconnection/podman/podman.sock" "test default connection"
+
+    CONTAINER_CONNECTION=env-override _run_podman_remote 125 --remote ps
+    assert "$output" =~ "/run/user/env-override/podman/podman.sock" "test env variable CONTAINER_CONNECTION wrt config"
+
+    CONTAINER_HOST=foo://124.com _run_podman_remote 125 --remote ps
+    assert "$output" =~ "foo" "test env variable CONTAINER_HOST wrt config"
+
+    # Clean up
+    run_podman system connection rm defaultconnection
+    run_podman system connection rm env-override
+    run_podman system connection rm cli-override
+
+    # With all system connections removed, test the default connection.
+    # This only works in upstream CI, where we run with a nonstandard socket.
+    # In gating we use the default /run/...
+    run_podman info --format '{{.Host.RemoteSocket.Path}}'
+    local sock="$output"
+    if [[ "$sock" =~ //run/ ]]; then
+        _run_podman_remote --remote info --format '{{.Host.RemoteSocket.Path}}'
+        assert "$output" = "$sock" "podman-remote is using default socket path"
+    else
+        # Nonstandard socket
+        _run_podman_remote 125 --remote ps
+        assert "$output" =~ "/run/[a-z0-9/]*podman/podman.sock"\
+               "test absence of default connection"
+    fi
 }
 
 # vim: filetype=sh

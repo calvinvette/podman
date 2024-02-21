@@ -1,5 +1,4 @@
 //go:build !windows
-// +build !windows
 
 package containers
 
@@ -8,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 
-	sig "github.com/containers/podman/v4/pkg/signal"
+	sig "github.com/containers/podman/v5/pkg/signal"
 	"golang.org/x/term"
 )
 

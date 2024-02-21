@@ -1,11 +1,11 @@
 package pods
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/inspect"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/inspect"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +16,7 @@ var (
 
 	inspectCmd = &cobra.Command{
 		Use:               "inspect [options] POD [POD...]",
-		Short:             "Displays a pod configuration",
+		Short:             "Display a pod configuration",
 		Long:              inspectDescription,
 		RunE:              inspectExec,
 		ValidArgsFunction: common.AutocompletePods,
@@ -41,8 +41,6 @@ func init() {
 }
 
 func inspectExec(cmd *cobra.Command, args []string) error {
-	// We need backwards compat with the old podman pod inspect behavior.
-	// https://github.com/containers/podman/pull/15675
-	inspectOpts.Type = common.PodLegacyType
+	inspectOpts.Type = common.PodType
 	return inspect.Inspect(args, *inspectOpts)
 }

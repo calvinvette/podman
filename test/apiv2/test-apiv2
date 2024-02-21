@@ -147,7 +147,8 @@ function like() {
 function _show_ok() {
     local ok=$1
     # Exec tests include control characters; filter them out
-    local testname=$(tr -d \\012 <<<"$2"|cat -vT)
+    # Also filter out timestamps, to get consistent test names in logs
+    local testname=$(tr -d \\012 <<<"$2"|sed -e 's/since=[0-9.]\+/since=(T)/'|cat -vT)
 
     # If output is a tty, colorize pass/fail
     local red=
@@ -255,6 +256,10 @@ function t() {
 
         for arg; do
             case "$arg" in
+                # This is just some hack to avoid adding `-d {}` to curl for endpoints where we really need an empty body.
+                # --disable makes curl not lookup the curlrc file, it shouldn't affect the tests in any way.
+                -)                curl_args+=(--disable);
+                                  shift;;
                 *=*)              post_args+=("$arg");
                                   shift;;
                 *.json)           _add_curl_args $arg;
@@ -342,7 +347,7 @@ function t() {
     # Show returned headers (without trailing ^M or empty lines) in log file.
     # Sometimes -- I can't remember why! -- we don't get headers.
     if [[ -e $WORKDIR/curl.headers.out ]]; then
-        tr -d '\015' < $WORKDIR/curl.headers.out | egrep '.' >>$LOG
+        tr -d '\015' < $WORKDIR/curl.headers.out | grep -E '.' >>$LOG
     fi
 
     IFS='^' read actual_code content_type time_total <<<"$response"
@@ -443,7 +448,8 @@ function start_service() {
         $PODMAN_BIN unshare true
     fi
 
-    $PODMAN_BIN \
+    CONTAINERS_REGISTRIES_CONF=$TESTS_DIR/../registries.conf \
+        $PODMAN_BIN \
         --root $WORKDIR/server_root --syslog=true \
         system service \
         --time 0 \

@@ -56,7 +56,14 @@ function teardown() {
     CR=$'\r'
 
     # ...and make sure stty under podman reads that.
+    # This flakes often ("stty: standard input"), so, retry.
     run_podman run -it --name mystty $IMAGE stty size <$PODMAN_TEST_PTY
+    if [[ "$output" =~ stty ]]; then
+        echo "# stty flaked, retrying: $output" >&3
+        run_podman rm -f mystty
+        sleep 1
+        run_podman run -it --name mystty $IMAGE stty size <$PODMAN_TEST_PTY
+    fi
     is "$output" "$rows $cols$CR" "stty under podman run reads the correct dimensions"
 
     run_podman rm -t 0 -f mystty
@@ -81,8 +88,8 @@ function teardown() {
 
 
 @test "podman run --tty -i failure with no tty" {
-    run_podman run --tty -i --rm $IMAGE echo hello < /dev/null
-    is "$output" ".*The input device is not a TTY.*" "-it _without_ a tty"
+    run_podman 0+w run --tty -i --rm $IMAGE echo hello < /dev/null
+    require_warning "The input device is not a TTY.*" "-it _without_ a tty"
 
     CR=$'\r'
     run_podman run --tty -i --rm $IMAGE echo hello <$PODMAN_TEST_PTY

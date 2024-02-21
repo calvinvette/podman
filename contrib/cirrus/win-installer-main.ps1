@@ -1,48 +1,12 @@
- # Powershell doesn't exit after
- function CheckExit {
-    if ($LASTEXITCODE -ne 0) {
-        Exit $LASTEXITCODE
-    }
-}
-function DownloadFile {
-    param(
-        [Parameter(Mandatory)]
-        [string]$url,
-        [Parameter(Mandatory)]
-        [string]$file,
-        [Int]$retries=5,
-        [Int]$delay=8
-    )
-    $ProgressPreference = 'SilentlyContinue';
-    Write-Host "Downloading $url to $file"
-    For($i = 0;;) {
-        Try {
-            Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -Uri $url -OutFile $file
-            Break
-        } Catch {
-            if (++$i -gt $retries) {
-                throw $_.Exception
-            }
-            Write-Host "Download failed - retrying:" $_.Exception.Response.StatusCode
-            Start-Sleep -Seconds $delay
-        }
-    }
-}
-# Drop global envs which have unix paths, defaults are fine
-Remove-Item Env:\GOPATH
-Remove-Item Env:\GOSRC
-Remove-Item Env:\GOCACHE
+#!/usr/bin/env powershell
 
-Set-Location contrib\win-installer
+. $PSScriptRoot\win-lib.ps1
 
-# Download and extract alt_build win release zip
-$url = "${ENV:ART_URL}/Windows Cross/repo/repo.tbz"
-# Arc requires extension to be "tbz2"
-DownloadFile "$url" "repo.tbz2"
-arc unarchive repo.tbz2 .; CheckExit
+Set-Location "$ENV:CIRRUS_WORKING_DIR\repo\contrib\win-installer"
 
 # Build Installer
-.\build.ps1 $Env:WIN_INST_VER dev repo; CheckExit
+# Note: consumes podman-remote-release-windows_amd64.zip from repo.tbz2
+Run-Command ".\build.ps1 $Env:WIN_INST_VER dev `"$ENV:CIRRUS_WORKING_DIR\repo`""
 
 # Run the installer silently and WSL install option disabled (prevent reboots, wsl requirements)
 # We need AllowOldWin=1 for server 2019 (cirrus image), can be dropped after server 2022
@@ -50,11 +14,10 @@ $ret = Start-Process -Wait -PassThru ".\podman-${ENV:WIN_INST_VER}-dev-setup.exe
 if ($ret.ExitCode -ne 0) {
     Write-Host "Install failed, dumping log"
     Get-Content inst.log
-    Exit $ret.ExitCode
+    throw "Exit code is $($ret.ExitCode)"
 }
 if (! ((Test-Path -Path "C:\Program Files\RedHat\Podman\podman.exe") -and `
        (Test-Path -Path "C:\Program Files\RedHat\Podman\win-sshproxy.exe"))) {
-    Write-Host "Expected podman.exe and win-sshproxy.exe, one or both not present after install"
-    Exit 1
+    throw "Expected podman.exe and win-sshproxy.exe, one or both not present after install"
 }
 Write-Host "Installer verification successful!"

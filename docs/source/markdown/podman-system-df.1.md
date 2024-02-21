@@ -14,17 +14,35 @@ Show podman disk usage
 
 Pretty-print images using a Go template or JSON. This flag is not allowed in combination with **--verbose**
 
+Valid placeholders for the Go template are listed below:
+
+| **Placeholder**           | **Description**                                  |
+| ------------------------- | ------------------------------------------------ |
+| .Active                   | Indicates whether volume is in use               |
+| .RawReclaimable           | Raw reclaimable size of each Type                |
+| .RawSize                  | Raw size of each type                            |
+| .Reclaimable              | Reclaimable size or each type (human-readable)   |
+| .Size                     | Size of each type (human-readable)               |
+| .Total                    | Total items for each type                        |
+| .Type                     | Type of data                                     |
+
+
 #### **--verbose**, **-v**
 Show detailed information on space usage
 
 ## EXAMPLE
+
+Show disk usage:
 ```
 $ podman system df
 TYPE            TOTAL   ACTIVE   SIZE    RECLAIMABLE
 Images          6       2        281MB   168MB (59%)
 Containers      3       1        0B      0B (0%)
 Local Volumes   1       1        22B     0B (0%)
+```
 
+Show disk usage in verbose mode:
+```
 $ podman system df -v
 Images space usage:
 

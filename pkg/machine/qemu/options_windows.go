@@ -1,3 +1,5 @@
+//go:build windows
+
 package qemu
 
 import (
@@ -10,4 +12,8 @@ func getRuntimeDir() (string, error) {
 		tmpDir = os.Getenv("LOCALAPPDATA") + "\\Temp"
 	}
 	return tmpDir, nil
+}
+
+func useNetworkRecover() bool {
+	return false
 }

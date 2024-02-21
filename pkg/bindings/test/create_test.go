@@ -3,9 +3,9 @@ package bindings_test
 import (
 	"time"
 
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/specgen"
-	. "github.com/onsi/ginkgo"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/specgen"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 )
@@ -33,7 +33,8 @@ var _ = Describe("Create containers ", func() {
 	It("create a container running top", func() {
 		s := specgen.NewSpecGenerator(alpine.name, false)
 		s.Command = []string{"top"}
-		s.Terminal = true
+		terminal := true
+		s.Terminal = &terminal
 		s.Name = "top"
 		ctr, err := containers.CreateWithSpec(bt.conn, s, nil)
 		Expect(err).ToNot(HaveOccurred())

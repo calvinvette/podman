@@ -24,6 +24,28 @@ Inspect all volumes.
 
 Format volume output using Go template
 
+Valid placeholders for the Go template are listed below:
+
+| **Placeholder**     | **Description**                                        |
+| ------------------- | ------------------------------------------------------ |
+| .Anonymous          | Indicates whether volume is anonymous                  |
+| .CreatedAt ...      | Volume creation time                                   |
+| .Driver             | Volume driver                                          |
+| .GID                | GID the volume was created with                        |
+| .Labels ...         | Label information associated with the volume           |
+| .LockNumber         | Number of the volume's Libpod lock                     |
+| .MountCount         | Number of times the volume is mounted                  |
+| .Mountpoint         | Source of volume mount point                           |
+| .Name               | Volume name                                            |
+| .NeedsChown         | Indicates volume needs to be chowned on first use      |
+| .NeedsCopyUp        | Indicates volume needs dest data copied up on first use|
+| .Options ...        | Volume options                                         |
+| .Scope              | Volume scope                                           |
+| .Status ...         | Status of the volume                                   |
+| .StorageID          | StorageID of the volume                                |
+| .Timeout            | Timeout of the volume                                  |
+| .UID                | UID the volume was created with                        |
+
 #### **--help**
 
 Print usage statement
@@ -31,12 +53,48 @@ Print usage statement
 
 ## EXAMPLES
 
+Inspect named volume.
 ```
 $ podman volume inspect myvol
+[
+     {
+          "Name": "myvol",
+          "Driver": "local",
+          "Mountpoint": "/home/myusername/.local/share/containers/storage/volumes/myvol/_data",
+          "CreatedAt": "2023-03-13T16:26:48.423069028-04:00",
+          "Labels": {},
+          "Scope": "local",
+          "Options": {},
+          "MountCount": 0,
+          "NeedsCopyUp": true,
+          "NeedsChown": true
+     }
+]
+```
 
+Inspect all volumes.
+```
 $ podman volume inspect --all
+[
+     {
+          "Name": "myvol",
+          "Driver": "local",
+          "Mountpoint": "/home/myusername/.local/share/containers/storage/volumes/myvol/_data",
+          "CreatedAt": "2023-03-13T16:26:48.423069028-04:00",
+          "Labels": {},
+          "Scope": "local",
+          "Options": {},
+          "MountCount": 0,
+          "NeedsCopyUp": true,
+          "NeedsChown": true
+     }
+]
+```
 
+Inspect named volume and display its Driver and Scope field.
+```
 $ podman volume inspect --format "{{.Driver}} {{.Scope}}" myvol
+local local
 ```
 
 ## SEE ALSO

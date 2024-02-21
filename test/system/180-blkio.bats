@@ -2,6 +2,8 @@
 #
 # podman blkio-related tests
 #
+# bats file_tags=distro-integration
+#
 
 load helpers
 
@@ -22,7 +24,6 @@ function teardown() {
 }
 
 @test "podman run --blkio-weight-device" {
-
     skip_if_rootless "cannot create devices in rootless mode"
 
     # create loopback device

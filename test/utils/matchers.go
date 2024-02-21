@@ -3,115 +3,11 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 
-	"github.com/containers/common/pkg/config"
-	. "github.com/onsi/gomega" //nolint:revive,stylecheck
 	"github.com/onsi/gomega/format"
 	"github.com/onsi/gomega/gexec"
-	"github.com/onsi/gomega/matchers"
 	"github.com/onsi/gomega/types"
 )
-
-// HaveActiveService verifies the given service is the active service.
-func HaveActiveService(name interface{}) OmegaMatcher {
-	return WithTransform(
-		func(cfg *config.Config) string {
-			return cfg.Engine.ActiveService
-		},
-		Equal(name))
-}
-
-type ServiceMatcher struct {
-	types.GomegaMatcher
-	Name                  interface{}
-	URI                   interface{}
-	Identity              interface{}
-	failureMessage        string
-	negatedFailureMessage string
-}
-
-func VerifyService(name, uri, identity interface{}) OmegaMatcher {
-	return &ServiceMatcher{
-		Name:     name,
-		URI:      uri,
-		Identity: identity,
-	}
-}
-
-func (matcher *ServiceMatcher) Match(actual interface{}) (success bool, err error) {
-	cfg, ok := actual.(*config.Config)
-	if !ok {
-		return false, fmt.Errorf("ServiceMatcher matcher expects a config.Config")
-	}
-
-	if _, err = url.Parse(matcher.URI.(string)); err != nil {
-		return false, err
-	}
-
-	success, err = HaveKey(matcher.Name).Match(cfg.Engine.ServiceDestinations)
-	if !success || err != nil {
-		matcher.failureMessage = HaveKey(matcher.Name).FailureMessage(cfg.Engine.ServiceDestinations)
-		matcher.negatedFailureMessage = HaveKey(matcher.Name).NegatedFailureMessage(cfg.Engine.ServiceDestinations)
-		return
-	}
-
-	sd := cfg.Engine.ServiceDestinations[matcher.Name.(string)]
-	success, err = Equal(matcher.URI).Match(sd.URI)
-	if !success || err != nil {
-		matcher.failureMessage = Equal(matcher.URI).FailureMessage(sd.URI)
-		matcher.negatedFailureMessage = Equal(matcher.URI).NegatedFailureMessage(sd.URI)
-		return
-	}
-
-	success, err = Equal(matcher.Identity).Match(sd.Identity)
-	if !success || err != nil {
-		matcher.failureMessage = Equal(matcher.Identity).FailureMessage(sd.Identity)
-		matcher.negatedFailureMessage = Equal(matcher.Identity).NegatedFailureMessage(sd.Identity)
-		return
-	}
-
-	return true, nil
-}
-
-func (matcher *ServiceMatcher) FailureMessage(_ interface{}) string {
-	return matcher.failureMessage
-}
-
-func (matcher *ServiceMatcher) NegatedFailureMessage(_ interface{}) string {
-	return matcher.negatedFailureMessage
-}
-
-type URLMatcher struct {
-	matchers.EqualMatcher
-}
-
-// VerifyURL matches when actual is a valid URL and matches expected.
-func VerifyURL(uri interface{}) OmegaMatcher {
-	return &URLMatcher{matchers.EqualMatcher{Expected: uri}}
-}
-
-func (matcher *URLMatcher) Match(actual interface{}) (bool, error) {
-	e, ok := matcher.Expected.(string)
-	if !ok {
-		return false, fmt.Errorf("VerifyURL requires string inputs %T is not supported", matcher.Expected)
-	}
-	eURI, err := url.Parse(e)
-	if err != nil {
-		return false, err
-	}
-
-	a, ok := actual.(string)
-	if !ok {
-		return false, fmt.Errorf("VerifyURL requires string inputs %T is not supported", actual)
-	}
-	aURI, err := url.Parse(a)
-	if err != nil {
-		return false, err
-	}
-
-	return (&matchers.EqualMatcher{Expected: eURI}).Match(aURI)
-}
 
 type ExitMatcher struct {
 	types.GomegaMatcher
@@ -166,6 +62,54 @@ func (matcher *ExitMatcher) MatchMayChangeInTheFuture(actual interface{}) bool {
 		return session.ExitCode() == -1
 	}
 	return true
+}
+
+// ExitCleanly asserts that a PodmanSession exits 0 and with no stderr
+func ExitCleanly() types.GomegaMatcher {
+	return &exitCleanlyMatcher{}
+}
+
+type exitCleanlyMatcher struct {
+	msg string
+}
+
+type podmanSession interface {
+	ExitCode() int
+	ErrorToString() string
+}
+
+func (matcher *exitCleanlyMatcher) Match(actual interface{}) (success bool, err error) {
+	session, ok := actual.(podmanSession)
+	if !ok {
+		return false, fmt.Errorf("ExitCleanly must be passed a PodmanSession; Got:\n %+v\n%q", actual, format.Object(actual, 1))
+	}
+
+	exitcode := session.ExitCode()
+	stderr := session.ErrorToString()
+	if exitcode != 0 {
+		matcher.msg = fmt.Sprintf("Command failed with exit status %d", exitcode)
+		if stderr != "" {
+			matcher.msg += ". See above for error message."
+		}
+		return false, nil
+	}
+
+	// Exit status is 0. Now check for anything on stderr
+	if stderr != "" {
+		matcher.msg = fmt.Sprintf("Unexpected warnings seen on stderr: %q", stderr)
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func (matcher *exitCleanlyMatcher) FailureMessage(_ interface{}) (message string) {
+	return matcher.msg
+}
+
+func (matcher *exitCleanlyMatcher) NegatedFailureMessage(_ interface{}) (message string) {
+	// FIXME - I see no situation in which we could ever want this?
+	return matcher.msg + " (NOT!)"
 }
 
 type ValidJSONMatcher struct {

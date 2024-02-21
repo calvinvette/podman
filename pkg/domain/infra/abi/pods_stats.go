@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/containers/common/pkg/cgroups"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/utils"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/utils"
 	"github.com/docker/go-units"
 )
 
@@ -43,12 +44,19 @@ func (ic *ContainerEngine) podsToStatsReport(pods []*libpod.Pod) ([]*entities.Po
 		}
 		podID := pods[i].ID()[:12]
 		for j := range podStats {
+			var podNetInput uint64
+			var podNetOutput uint64
+			for _, stats := range podStats[j].Network {
+				podNetInput += stats.RxBytes
+				podNetOutput += stats.TxBytes
+			}
+
 			r := entities.PodStatsReport{
 				CPU:           floatToPercentString(podStats[j].CPU),
 				MemUsage:      combineHumanValues(podStats[j].MemUsage, podStats[j].MemLimit),
 				MemUsageBytes: combineBytesValues(podStats[j].MemUsage, podStats[j].MemLimit),
 				Mem:           floatToPercentString(podStats[j].MemPerc),
-				NetIO:         combineHumanValues(podStats[j].NetInput, podStats[j].NetOutput),
+				NetIO:         combineHumanValues(podNetInput, podNetOutput),
 				BlockIO:       combineHumanValues(podStats[j].BlockInput, podStats[j].BlockOutput),
 				PIDS:          pidsToString(podStats[j].PIDs),
 				CID:           podStats[j].ContainerID[:12],
@@ -90,5 +98,5 @@ func pidsToString(pid uint64) string {
 		// If things go bazinga, return a safe value
 		return "--"
 	}
-	return fmt.Sprintf("%d", pid)
+	return strconv.FormatUint(pid, 10)
 }

@@ -8,16 +8,16 @@ import (
 
 	"errors"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/domain/filters"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi/parse"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/domain/filters"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi/parse"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/gorilla/schema"
 )
 
@@ -119,10 +119,14 @@ func ListVolumes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	volumeFilters, err := filters.GenerateVolumeFilters(*filterMap)
-	if err != nil {
-		utils.InternalServerError(w, err)
-		return
+	volumeFilters := []libpod.VolumeFilter{}
+	for filter, filterValues := range *filterMap {
+		filterFunc, err := filters.GenerateVolumeFilters(filter, filterValues, runtime)
+		if err != nil {
+			utils.InternalServerError(w, err)
+			return
+		}
+		volumeFilters = append(volumeFilters, filterFunc)
 	}
 
 	vols, err := runtime.Volumes(volumeFilters...)
@@ -162,9 +166,13 @@ func pruneVolumesHelper(r *http.Request) ([]*reports.PruneReport, error) {
 	}
 
 	f := (url.Values)(*filterMap)
-	filterFuncs, err := filters.GeneratePruneVolumeFilters(f)
-	if err != nil {
-		return nil, err
+	filterFuncs := []libpod.VolumeFilter{}
+	for filter, filterValues := range f {
+		filterFunc, err := filters.GeneratePruneVolumeFilters(filter, filterValues, runtime)
+		if err != nil {
+			return nil, err
+		}
+		filterFuncs = append(filterFuncs, filterFunc)
 	}
 
 	reports, err := runtime.PruneVolumes(r.Context(), filterFuncs)

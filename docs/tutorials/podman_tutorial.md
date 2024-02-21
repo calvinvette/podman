@@ -13,18 +13,15 @@ root escalation is required.
 
 ## Installing Podman
 
-For installing or building Podman, please see the [installation instructions](https://podman.io/getting-started/installation).
+For installing or building Podman, see the [installation instructions](https://podman.io/getting-started/installation).
 
 ## Familiarizing yourself with Podman
 
 ### Running a sample container
-This sample container will run a very basic httpd server that serves only its index
+This sample container will run a very basic httpd server (named basic_httpd) that serves only its index
 page.
 ```console
-podman run -dt -p 8080:8080/tcp -e HTTPD_VAR_RUN=/run/httpd -e HTTPD_MAIN_CONF_D_PATH=/etc/httpd/conf.d \
-                  -e HTTPD_MAIN_CONF_PATH=/etc/httpd/conf \
-                  -e HTTPD_CONTAINER_SCRIPTS_PATH=/usr/share/container-scripts/httpd/ \
-                  registry.fedoraproject.org/f29/httpd /usr/bin/run-httpd
+podman run --name basic_httpd -dt -p 8080:80/tcp docker.io/nginx
 ```
 Because the container is being run in detached mode, represented by the *-d* in the `podman run` command, Podman
 will print the container ID after it has run. Note that we use port forwarding to be able to
@@ -41,13 +38,10 @@ Note: If you add *-a* to the *ps* command, Podman will show all containers.
 You can "inspect" a running container for metadata and details about itself.  We can even use
 the inspect subcommand to see what IP address was assigned to the container. As the container is running in rootless mode, an IP address is not assigned and the value will be listed as "none" in the output from inspect.
 ```console
-podman inspect -l | grep IPAddress\":
+podman inspect basic_httpd | grep IPAddress\":
             "SecondaryIPAddresses": null,
             "IPAddress": "",
 ```
-
-Note: The -l is a convenience argument for **latest container**.  You can also use the container's ID instead
-of -l.
 
 ### Testing the httpd server
 As we do not have the IP address of the container, we can test the network communication between the host
@@ -60,7 +54,7 @@ curl http://localhost:8080
 ### Viewing the container's logs
 You can view the container's logs with Podman as well:
 ```console
-podman logs --latest
+podman logs <container_id>
 10.88.0.1 - - [07/Feb/2018:15:22:11 +0000] "GET / HTTP/1.1" 200 612 "-" "curl/7.55.1" "-"
 10.88.0.1 - - [07/Feb/2018:15:22:30 +0000] "GET / HTTP/1.1" 200 612 "-" "curl/7.55.1" "-"
 10.88.0.1 - - [07/Feb/2018:15:22:30 +0000] "GET / HTTP/1.1" 200 612 "-" "curl/7.55.1" "-"
@@ -126,7 +120,7 @@ curl http://<IP_address>:8080
 ### Stopping the container
 To stop the httpd container:
 ```console
-podman stop --latest
+podman stop <container_id>
 ```
 You can also check the status of one or more containers using the *ps* subcommand. In this case, we should
 use the *-a* argument to list all containers.
@@ -137,7 +131,7 @@ podman ps -a
 ### Removing the container
 To remove the httpd container:
 ```console
-podman rm --latest
+podman rm <container_id>
 ```
 You can verify the deletion of the container by running *podman ps -a*.
 

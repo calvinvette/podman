@@ -19,7 +19,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/containers/storage/pkg/parsers/kernel"
-	. "github.com/onsi/ginkgo"       //nolint:revive,stylecheck
+	. "github.com/onsi/ginkgo/v2"    //nolint:revive,stylecheck
 	. "github.com/onsi/gomega"       //nolint:revive,stylecheck
 	. "github.com/onsi/gomega/gexec" //nolint:revive,stylecheck
 )
@@ -65,6 +65,7 @@ type PodmanTest struct {
 	ImageCacheDir      string
 	ImageCacheFS       string
 	NetworkBackend     NetworkBackend
+	DatabaseBackend    string
 	PodmanBinary       string
 	PodmanMakeOptions  func(args []string, noEvents, noCache bool) []string
 	RemoteCommand      *exec.Cmd
@@ -116,9 +117,9 @@ func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string
 	runCmd = append(runCmd, podmanBinary)
 
 	if env == nil {
-		fmt.Printf("Running: %s %s\n", strings.Join(runCmd, " "), strings.Join(podmanOptions, " "))
+		GinkgoWriter.Printf("Running: %s %s\n", strings.Join(runCmd, " "), strings.Join(podmanOptions, " "))
 	} else {
-		fmt.Printf("Running: (env: %v) %s %s\n", env, strings.Join(runCmd, " "), strings.Join(podmanOptions, " "))
+		GinkgoWriter.Printf("Running: (env: %v) %s %s\n", env, strings.Join(runCmd, " "), strings.Join(podmanOptions, " "))
 	}
 	if uid != 0 || gid != 0 {
 		pythonCmd := fmt.Sprintf("import os; import sys; uid = %d; gid = %d; cwd = '%s'; os.setgid(gid); os.setuid(uid); os.chdir(cwd) if len(cwd)>0 else True; os.execv(sys.argv[1], sys.argv[1:])", gid, uid, cwd)
@@ -158,7 +159,7 @@ func (p *PodmanTest) WaitForContainer() bool {
 		}
 		time.Sleep(1 * time.Second)
 	}
-	fmt.Printf("WaitForContainer(): timed out\n")
+	GinkgoWriter.Printf("WaitForContainer(): timed out\n")
 	return false
 }
 
@@ -224,13 +225,13 @@ func (p *PodmanTest) WaitContainerReady(id string, expStr string, timeout int, s
 	s.WaitWithDefaultTimeout()
 
 	for {
-		if time.Since(startTime) >= time.Duration(timeout)*time.Second {
-			fmt.Printf("Container %s is not ready in %ds", id, timeout)
-			return false
-		}
-
 		if strings.Contains(s.OutputToString(), expStr) || strings.Contains(s.ErrorToString(), expStr) {
 			return true
+		}
+
+		if time.Since(startTime) >= time.Duration(timeout)*time.Second {
+			GinkgoWriter.Printf("Container %s is not ready in %ds", id, timeout)
+			return false
 		}
 		time.Sleep(time.Duration(step) * time.Second)
 		s = p.PodmanBase([]string{"logs", id}, false, true)
@@ -353,7 +354,7 @@ func (s *PodmanSession) LineInOutputContainsTag(repo, tag string) bool {
 func (s *PodmanSession) IsJSONOutputValid() bool {
 	var i interface{}
 	if err := json.Unmarshal(s.Out.Contents(), &i); err != nil {
-		fmt.Println(err)
+		GinkgoWriter.Println(err)
 		return false
 	}
 	return true
@@ -373,7 +374,6 @@ func (s *PodmanSession) WaitWithTimeout(timeout int) {
 	})
 	os.Stdout.Sync()
 	os.Stderr.Sync()
-	fmt.Println("output:", s.OutputToString())
 }
 
 // CreateTempDirInTempDir create a temp dir with prefix podman_test
@@ -384,7 +384,7 @@ func CreateTempDirInTempDir() (string, error) {
 // SystemExec is used to exec a system command to check its exit code or output
 func SystemExec(command string, args []string) *PodmanSession {
 	c := exec.Command(command, args...)
-	fmt.Println("Execing " + c.String() + "\n")
+	GinkgoWriter.Println("Execing " + c.String() + "\n")
 	session, err := Start(c, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
@@ -396,22 +396,12 @@ func SystemExec(command string, args []string) *PodmanSession {
 // StartSystemExec is used to start exec a system command
 func StartSystemExec(command string, args []string) *PodmanSession {
 	c := exec.Command(command, args...)
-	fmt.Println("Execing " + c.String() + "\n")
+	GinkgoWriter.Println("Execing " + c.String() + "\n")
 	session, err := Start(c, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
 	}
 	return &PodmanSession{session}
-}
-
-// StringInSlice determines if a string is in a string slice, returns bool
-func StringInSlice(s string, sl []string) bool {
-	for _, i := range sl {
-		if i == s {
-			return true
-		}
-	}
-	return false
 }
 
 // tagOutPutToMap parses each string in imagesOutput and returns

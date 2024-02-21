@@ -1,5 +1,4 @@
-//go:build linux && !remote
-// +build linux,!remote
+//go:build (linux || freebsd) && !remote
 
 package system
 
@@ -11,12 +10,12 @@ import (
 	"time"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/systemd"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/systemd"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -129,7 +128,7 @@ func resolveAPIURI(uri []string) (string, error) {
 		logrus.Info("Using systemd socket activation to determine API endpoint")
 		return "", nil
 	case rootless.IsRootless():
-		xdg, err := util.GetRuntimeDir()
+		xdg, err := util.GetRootlessRuntimeDir()
 		if err != nil {
 			return "", err
 		}
@@ -139,7 +138,7 @@ func resolveAPIURI(uri []string) (string, error) {
 		if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
 			return "", err
 		}
-		return "unix:" + socketPath, nil
+		return "unix://" + socketPath, nil
 	default:
 		if err := os.MkdirAll(filepath.Dir(registry.DefaultRootAPIPath), 0700); err != nil {
 			return "", err

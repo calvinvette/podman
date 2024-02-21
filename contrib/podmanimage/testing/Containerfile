@@ -16,7 +16,7 @@ FROM registry.fedoraproject.org/fedora:latest
 #       https://bugzilla.redhat.com/show_bug.cgi?id=1995337#c3
 RUN dnf -y update && \
     rpm --setcaps shadow-utils 2>/dev/null && \
-    dnf -y install podman fuse-overlayfs \
+    dnf -y install podman fuse-overlayfs openssh-clients \
         --exclude container-selinux --enablerepo updates-testing && \
     dnf clean all && \
     rm -rf /var/cache /var/log/dnf* /var/log/yum.*
@@ -39,6 +39,9 @@ RUN sed -e 's|^#mount_program|mount_program|g' \
            -e 's|^mountopt[[:space:]]*=.*$|mountopt = "nodev,fsync=0"|g' \
            /usr/share/containers/storage.conf \
            > /etc/containers/storage.conf
+
+# Setup internal Podman to pass secrets/subscriptions down from host to internal container
+RUN printf '/run/secrets/etc-pki-entitlement:/run/secrets/etc-pki-entitlement\n/run/secrets/rhsm:/run/secrets/rhsm\n' > /etc/containers/mounts.conf
 
 # Note VOLUME options must always happen after the chown call above
 # RUN commands can not modify existing volumes

@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	sig "github.com/containers/podman/v4/pkg/signal"
+	sig "github.com/containers/podman/v5/pkg/signal"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
@@ -61,7 +61,6 @@ func notifyWinChange(ctx context.Context, winChange chan os.Signal, stdin *os.Fi
 			}
 		}
 	}()
-
 }
 
 func getTermSize(stdin *os.File, stdout *os.File) (width, height int, err error) {

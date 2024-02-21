@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -7,9 +9,9 @@ import (
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/secrets"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/namespaces"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/namespaces"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/containers/storage"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -116,6 +118,8 @@ type ContainerRootFSConfig struct {
 	Rootfs string `json:"rootfs,omitempty"`
 	// RootfsOverlay tells if rootfs has to be mounted as an overlay
 	RootfsOverlay bool `json:"rootfs_overlay,omitempty"`
+	// RootfsMapping specifies if there are mappings to apply to the rootfs.
+	RootfsMapping *string `json:"rootfs_mapping,omitempty"`
 	// ShmDir is the path to be mounted on /dev/shm in container.
 	// If not set manually at creation time, Libpod will create a tmpfs
 	// with the size specified in ShmSize and populate this with the path of
@@ -128,6 +132,8 @@ type ContainerRootFSConfig struct {
 	// ShmSize is the size of the container's SHM. Only used if ShmDir was
 	// not set manually at time of creation.
 	ShmSize int64 `json:"shmSize"`
+	// ShmSizeSystemd is the size of systemd-specific tmpfs mounts
+	ShmSizeSystemd int64 `json:"shmSizeSystemd"`
 	// Static directory for container content that will persist across
 	// reboot.
 	// StaticDir is a persistent directory for Libpod files that will
@@ -154,7 +160,7 @@ type ContainerRootFSConfig struct {
 	// pre-1.8, which was used in very old Podman versions to determine how
 	// image volumes were handled in Libpod (support for these eventually
 	// moved out of Libpod into pkg/specgen).
-	// Please DO NOT re-use the `imageVolumes` name in container JSON again.
+	// Please DO NOT reuse the `imageVolumes` name in container JSON again.
 	ImageVolumes []*ContainerImageVolume `json:"ctrImageVolumes,omitempty"`
 	// CreateWorkingDir indicates that Libpod should create the container's
 	// working directory if it does not exist. Some OCI runtimes do this by
@@ -215,6 +221,8 @@ type ContainerSecurityConfig struct {
 	// Libpod - mostly used in rootless containers where the user running
 	// Libpod wants to retain their UID inside the container.
 	AddCurrentUserPasswdEntry bool `json:"addCurrentUserPasswdEntry,omitempty"`
+	// LabelNested, allow labeling separation from within a container
+	LabelNested bool `json:"label_nested"`
 }
 
 // ContainerNameSpaceConfig is an embedded sub-config providing
@@ -282,6 +290,12 @@ type ContainerNetworkConfig struct {
 	// bind-mounted inside the container.
 	// Conflicts with HostAdd.
 	UseImageHosts bool
+	// BaseHostsFile is the path to a hosts file, the entries from this file
+	// are added to the containers hosts file. As special value "image" is
+	// allowed which uses the /etc/hosts file from within the image and "none"
+	// which uses no base file at all. If it is empty we should default
+	// to the base_hosts_file configuration in containers.conf.
+	BaseHostsFile string `json:"baseHostsFile,omitempty"`
 	// Hosts to add in container
 	// Will be appended to host's host file
 	HostAdd []string `json:"hostsAdd,omitempty"`
@@ -352,6 +366,10 @@ type ContainerMiscConfig struct {
 	CgroupsMode string `json:"cgroupsMode,omitempty"`
 	// Cgroup parent of the container.
 	CgroupParent string `json:"cgroupParent"`
+	// GroupEntry specifies arbitrary data to append to a file.
+	GroupEntry string `json:"group_entry,omitempty"`
+	// KubeExitCodePropagation of the service container.
+	KubeExitCodePropagation define.KubeExitCodePropagation `json:"kubeExitCodePropagation"`
 	// LogPath log location
 	LogPath string `json:"logPath"`
 	// LogTag is the tag used for logging
@@ -365,7 +383,7 @@ type ContainerMiscConfig struct {
 	// RestartPolicy indicates what action the container will take upon
 	// exiting naturally.
 	// Allowed options are "no" (take no action), "on-failure" (restart on
-	// non-zero exit code, up an a maximum of RestartRetries times),
+	// non-zero exit code, up to a maximum of RestartRetries times),
 	// and "always" (always restart the container on any exit code).
 	// The empty string is treated as the default ("no")
 	RestartPolicy string `json:"restart_policy,omitempty"`
@@ -403,6 +421,9 @@ type ContainerMiscConfig struct {
 	// to 0, 1, 2) that will be passed to the executed process. The total FDs
 	// passed will be 3 + PreserveFDs.
 	PreserveFDs uint `json:"preserveFds,omitempty"`
+	// PreserveFD is a list of additional file descriptors (in addition
+	// to 0, 1, 2) that will be passed to the executed process.
+	PreserveFD []uint `json:"preserveFd,omitempty"`
 	// Timezone is the timezone inside the container.
 	// Local means it has the same timezone as the host machine
 	Timezone string `json:"timezone,omitempty"`
@@ -424,6 +445,8 @@ type ContainerMiscConfig struct {
 	// MountAllDevices is an option to indicate whether a privileged container
 	// will mount all the host's devices
 	MountAllDevices bool `json:"mountAllDevices"`
+	// ReadWriteTmpfs indicates whether all tmpfs should be mounted readonly when in ReadOnly mode
+	ReadWriteTmpfs bool `json:"readWriteTmpfs"`
 }
 
 // InfraInherit contains the compatible options inheritable from the infra container
@@ -441,6 +464,7 @@ type InfraInherit struct {
 	SelinuxOpts        []string                 `json:"selinux_opts,omitempty"`
 	Volumes            []*specgen.NamedVolume   `json:"volumes,omitempty"`
 	ShmSize            *int64                   `json:"shm_size"`
+	ShmSizeSystemd     *int64                   `json:"shm_size_systemd"`
 }
 
 // IsDefaultShmSize determines if the user actually set the shm in the parent ctr or if it has been set to the default size

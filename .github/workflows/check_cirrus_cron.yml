@@ -31,10 +31,10 @@ on:
 
 env:
     # CSV listing of e-mail addresses for delivery failure or error notices
-    RCPTCSV: rh.container.bot@gmail.com,podman-monitor@lists.podman.io
-    # Filename for table of cron-name to build-id data
+    RCPTCSV: podman-monitor@lists.podman.io
+    # Filename for table of build-id to cron-name data
     # (must be in $GITHUB_WORKSPACE/artifacts/)
-    NAME_ID_FILEPATH: './artifacts/name_id.txt'
+    ID_NAME_FILEPATH: './artifacts/id_name.txt'
 
 permissions:
   contents: read
@@ -44,7 +44,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             # This is where the scripts live
-            - uses: actions/checkout@v3
+            - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4
               with:
                   repository: containers/podman
                   ref: 'main'
@@ -61,7 +61,7 @@ jobs:
             - if: steps.cron.outputs.failures > 0
               name: Send failure notification e-mail
               # Ref: https://github.com/dawidd6/action-send-mail
-              uses: dawidd6/action-send-mail@v3.7.1
+              uses: dawidd6/action-send-mail@v3.11.0
               with:
                 server_address: ${{secrets.ACTION_MAIL_SERVER}}
                 server_port: 465
@@ -73,14 +73,14 @@ jobs:
                 body: file://./artifacts/email_body.txt
 
             - if: always()
-              uses: actions/upload-artifact@v3
+              uses: actions/upload-artifact@v4
               with:
                   name: ${{ github.job }}_artifacts
                   path: artifacts/*
 
             - if: failure()
               name: Send error notification e-mail
-              uses: dawidd6/action-send-mail@v3.7.1
+              uses: dawidd6/action-send-mail@v3.11.0
               with:
                 server_address: ${{secrets.ACTION_MAIL_SERVER}}
                 server_port: 465

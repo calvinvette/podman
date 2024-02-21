@@ -1,22 +1,23 @@
 package entities
 
-import "github.com/containers/podman/v4/libpod/define"
+import "github.com/containers/podman/v5/libpod/define"
 
 type ListReporter struct {
-	Name           string
-	Default        bool
-	Created        string
-	Running        bool
-	Starting       bool
-	LastUp         string
-	Stream         string
-	VMType         string
-	CPUs           uint64
-	Memory         string
-	DiskSize       string
-	Port           int
-	RemoteUsername string
-	IdentityPath   string
+	Name               string
+	Default            bool
+	Created            string
+	Running            bool
+	Starting           bool
+	LastUp             string
+	Stream             string
+	VMType             string
+	CPUs               uint64
+	Memory             string
+	DiskSize           string
+	Port               int
+	RemoteUsername     string
+	IdentityPath       string
+	UserModeNetworking bool
 }
 
 // MachineInfo contains info on the machine host and version info

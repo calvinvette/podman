@@ -15,8 +15,10 @@ import (
 	"sync"
 
 	"github.com/containerd/containerd/platforms"
+	"github.com/containers/buildah"
 	"github.com/containers/buildah/define"
 	internalUtil "github.com/containers/buildah/internal/util"
+	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
@@ -65,7 +67,9 @@ func BuildDockerfiles(ctx context.Context, store storage.Store, options define.B
 	if options.CommonBuildOpts == nil {
 		options.CommonBuildOpts = &define.CommonBuildOptions{}
 	}
-
+	if err := parse.Volumes(options.CommonBuildOpts.Volumes); err != nil {
+		return "", nil, fmt.Errorf("validating volumes: %w", err)
+	}
 	if len(paths) == 0 {
 		return "", nil, errors.New("building: no dockerfiles specified")
 	}
@@ -264,6 +268,9 @@ func BuildDockerfiles(ctx context.Context, store storage.Store, options define.B
 			}
 			thisID, thisRef, err := buildDockerfilesOnce(ctx, store, loggerPerPlatform, logPrefix, platformOptions, paths, files)
 			if err != nil {
+				if errorContext := strings.TrimSpace(logPrefix); errorContext != "" {
+					return fmt.Errorf("%s: %w", errorContext, err)
+				}
 				return err
 			}
 			instancesLock.Lock()
@@ -417,34 +424,6 @@ func buildDockerfilesOnce(ctx context.Context, store storage.Store, logger *logr
 			return "", nil, fmt.Errorf("parsing additional Dockerfile %s: %w", containerFiles[i], err)
 		}
 		mainNode.Children = append(mainNode.Children, additionalNode.Children...)
-	}
-
-	// Check if any modifications done to labels
-	// add them to node-layer so it becomes regular
-	// layer.
-	// Reason: Docker adds label modification as
-	// last step which can be processed as regular
-	// steps and if no modification is done to layers
-	// its easier to re-use cached layers.
-	if len(options.Labels) > 0 {
-		for _, labelSpec := range options.Labels {
-			label := strings.SplitN(labelSpec, "=", 2)
-			labelLine := ""
-			key := label[0]
-			value := ""
-			if len(label) > 1 {
-				value = label[1]
-			}
-			// check from only empty key since docker supports empty value
-			if key != "" {
-				labelLine = fmt.Sprintf("LABEL %q=%q\n", key, value)
-				additionalNode, err := imagebuilder.ParseDockerfile(strings.NewReader(labelLine))
-				if err != nil {
-					return "", nil, fmt.Errorf("while adding additional LABEL steps: %w", err)
-				}
-				mainNode.Children = append(mainNode.Children, additionalNode.Children...)
-			}
-		}
 	}
 
 	exec, err := newExecutor(logger, logPrefix, store, options, mainNode, containerFiles)
@@ -672,7 +651,7 @@ func baseImages(dockerfilenames []string, dockerfilecontents [][]byte, from stri
 		return nil, fmt.Errorf("reading multiple stages: %w", err)
 	}
 	var baseImages []string
-	nicknames := make(map[string]bool)
+	nicknames := make(map[string]struct{})
 	for stageIndex, stage := range stages {
 		node := stage.Node // first line
 		for node != nil {  // each line
@@ -694,7 +673,7 @@ func baseImages(dockerfilenames []string, dockerfilecontents [][]byte, from stri
 							}
 						}
 						base := child.Next.Value
-						if base != "scratch" && !nicknames[base] {
+						if base != "" && base != buildah.BaseImageFakeName && !internalUtil.SetHas(nicknames, base) {
 							headingArgs := argsMapToSlice(stage.Builder.HeadingArgs)
 							userArgs := argsMapToSlice(stage.Builder.Args)
 							// append heading args so if --build-arg key=value is not
@@ -713,7 +692,7 @@ func baseImages(dockerfilenames []string, dockerfilecontents [][]byte, from stri
 			node = node.Next // next line
 		}
 		if stage.Name != strconv.Itoa(stageIndex) {
-			nicknames[stage.Name] = true
+			nicknames[stage.Name] = struct{}{}
 		}
 	}
 	return baseImages, nil

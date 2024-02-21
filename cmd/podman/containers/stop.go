@@ -2,16 +2,17 @@ package containers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +30,6 @@ var (
 		},
 		ValidArgsFunction: common.AutocompleteContainersRunning,
 		Example: `podman stop ctrID
-  podman stop --latest
   podman stop --time 2 mywebserver 6e534f14da9d`,
 	}
 
@@ -43,7 +43,6 @@ var (
 		},
 		ValidArgsFunction: stopCommand.ValidArgsFunction,
 		Example: `podman container stop ctrID
-  podman container stop --latest
   podman container stop --time 2 mywebserver 6e534f14da9d`,
 	}
 )
@@ -53,7 +52,7 @@ var (
 		Filters: make(map[string][]string),
 	}
 	stopCidFiles = []string{}
-	stopTimeout  uint
+	stopTimeout  int
 )
 
 func stopFlags(cmd *cobra.Command) {
@@ -67,11 +66,11 @@ func stopFlags(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc(cidfileFlagName, completion.AutocompleteDefault)
 
 	timeFlagName := "time"
-	flags.UintVarP(&stopTimeout, timeFlagName, "t", containerConfig.Engine.StopTimeout, "Seconds to wait for stop before killing the container")
+	flags.IntVarP(&stopTimeout, timeFlagName, "t", int(containerConfig.Engine.StopTimeout), "Seconds to wait for stop before killing the container")
 	_ = cmd.RegisterFlagCompletionFunc(timeFlagName, completion.AutocompleteNone)
 
 	filterFlagName := "filter"
-	flags.StringSliceVarP(&filters, filterFlagName, "f", []string{}, "Filter output based on conditions given")
+	flags.StringArrayVarP(&filters, filterFlagName, "f", []string{}, "Filter output based on conditions given")
 	_ = cmd.RegisterFlagCompletionFunc(filterFlagName, common.AutocompletePsFilters)
 
 	if registry.IsRemote() {
@@ -101,12 +100,18 @@ func stop(cmd *cobra.Command, args []string) error {
 	var (
 		errs utils.OutputErrors
 	)
+	args = utils.RemoveSlash(args)
+
 	if cmd.Flag("time").Changed {
-		stopOptions.Timeout = &stopTimeout
+		timeout := uint(stopTimeout)
+		stopOptions.Timeout = &timeout
 	}
 	for _, cidFile := range stopCidFiles {
 		content, err := os.ReadFile(cidFile)
 		if err != nil {
+			if stopOptions.Ignore && errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return fmt.Errorf("reading CIDFile: %w", err)
 		}
 		id := strings.Split(string(content), "\n")[0]
@@ -114,11 +119,11 @@ func stop(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, f := range filters {
-		split := strings.SplitN(f, "=", 2)
-		if len(split) < 2 {
+		fname, filter, hasFilter := strings.Cut(f, "=")
+		if !hasFilter {
 			return fmt.Errorf("invalid filter %q", f)
 		}
-		stopOptions.Filters[split[0]] = append(stopOptions.Filters[split[0]], split[1])
+		stopOptions.Filters[fname] = append(stopOptions.Filters[fname], filter)
 	}
 
 	responses, err := registry.ContainerEngine().ContainerStop(context.Background(), args, stopOptions)

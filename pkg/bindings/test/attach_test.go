@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/specgen"
-	. "github.com/onsi/ginkgo"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/specgen"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 )
@@ -67,7 +67,8 @@ var _ = Describe("Podman containers attach", func() {
 	It("can echo data via cat in container", func() {
 		s := specgen.NewSpecGenerator(alpine.name, false)
 		s.Name = "CatAttachTest"
-		s.Terminal = true
+		localTrue := true
+		s.Terminal = &localTrue
 		s.Command = []string{"/bin/cat"}
 		ctnr, err := containers.CreateWithSpec(bt.conn, s, nil)
 		Expect(err).ShouldNot(HaveOccurred())

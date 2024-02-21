@@ -1,5 +1,4 @@
-//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd
-// +build darwin dragonfly freebsd linux netbsd openbsd
+//go:build dragonfly || freebsd || linux || netbsd || openbsd
 
 package qemu
 
@@ -23,11 +22,25 @@ func checkProcessStatus(processHint string, pid int, stderrBuf *bytes.Buffer) er
 	var status syscall.WaitStatus
 	pid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
 	if err != nil {
-		return fmt.Errorf("failed to read qem%su process status: %w", processHint, err)
+		return fmt.Errorf("failed to read %s process status: %w", processHint, err)
 	}
 	if pid > 0 {
 		// child exited
 		return fmt.Errorf("%s exited unexpectedly with exit code %d, stderr: %s", processHint, status.ExitStatus(), stderrBuf.String())
 	}
 	return nil
+}
+
+func sigKill(pid int) error {
+	return unix.Kill(pid, unix.SIGKILL)
+}
+
+func findProcess(pid int) (int, error) {
+	if err := unix.Kill(pid, 0); err != nil {
+		if err == unix.ESRCH {
+			return -1, nil
+		}
+		return -1, fmt.Errorf("pinging QEMU process: %w", err)
+	}
+	return pid, nil
 }

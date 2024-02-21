@@ -9,19 +9,19 @@ import (
 
 	"errors"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/copy"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/copy"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
 
 func Archive(w http.ResponseWriter, r *http.Request) {
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 
 	switch r.Method {
@@ -133,7 +133,7 @@ func handlePut(w http.ResponseWriter, r *http.Request, decoder *schema.Decoder, 
 		case errors.Is(err, define.ErrNoSuchCtr) || os.IsNotExist(err):
 			// 404 is returned for an absent container and path.  The
 			// clients must deal with it accordingly.
-			utils.Error(w, http.StatusNotFound, fmt.Errorf("the container doesn't exists: %w", err))
+			utils.Error(w, http.StatusNotFound, fmt.Errorf("the container does not exist: %w", err))
 		case strings.Contains(err.Error(), "copier: put: error creating file"):
 			// Not the best test but need to break this out for compatibility
 			// See vendor/github.com/containers/buildah/copier/copier.go:1585

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -7,7 +9,7 @@ import (
 
 	istorage "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/idtools"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -63,21 +65,17 @@ func (metadata *RuntimeContainerMetadata) SetMountLabel(mountLabel string) {
 	metadata.MountLabel = mountLabel
 }
 
-// CreateContainerStorage creates the storage end of things.  We already have the container spec created
+// CreateContainerStorage creates the storage end of things.  We already have the container spec created.
+// imageID and imageName must both be either empty or non-empty.
 // TO-DO We should be passing in an Image object in the future.
 func (r *storageService) CreateContainerStorage(ctx context.Context, systemContext *types.SystemContext, imageName, imageID, containerName, containerID string, options storage.ContainerOptions) (_ ContainerInfo, retErr error) {
 	var imageConfig *v1.Image
-	if imageName != "" {
-		var ref types.ImageReference
+	if imageID != "" {
 		if containerName == "" {
 			return ContainerInfo{}, define.ErrEmptyID
 		}
 		// Check if we have the specified image.
-		ref, err := istorage.Transport.ParseStoreReference(r.store, imageID)
-		if err != nil {
-			return ContainerInfo{}, err
-		}
-		img, err := istorage.Transport.GetStoreImage(r.store, ref)
+		ref, err := istorage.Transport.NewStoreReference(r.store, nil, imageID)
 		if err != nil {
 			return ContainerInfo{}, err
 		}
@@ -93,12 +91,6 @@ func (r *storageService) CreateContainerStorage(ctx context.Context, systemConte
 		if err != nil {
 			return ContainerInfo{}, err
 		}
-
-		// Update the image name and ID.
-		if imageName == "" && len(img.Names) > 0 {
-			imageName = img.Names[0]
-		}
-		imageID = img.ID
 	}
 
 	// Build metadata to store with the container.
@@ -164,8 +156,8 @@ func (r *storageService) CreateContainerStorage(ctx context.Context, systemConte
 	logrus.Debugf("Container %q has run directory %q", container.ID, containerRunDir)
 
 	return ContainerInfo{
-		UIDMap:       options.UIDMap,
-		GIDMap:       options.GIDMap,
+		UIDMap:       container.UIDMap,
+		GIDMap:       container.GIDMap,
 		Dir:          containerDir,
 		RunDir:       containerRunDir,
 		Config:       imageConfig,

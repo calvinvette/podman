@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/bindings"
+	dockerAPI "github.com/docker/docker/api/types"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/sirupsen/logrus"
 )
@@ -43,7 +43,7 @@ func ExecCreate(ctx context.Context, nameOrID string, config *handlers.ExecCreat
 	}
 	defer resp.Body.Close()
 
-	respStruct := new(entities.IDResponse)
+	respStruct := new(dockerAPI.IDResponse)
 	if err := resp.Process(respStruct); err != nil {
 		return "", err
 	}
@@ -104,6 +104,49 @@ func ExecStart(ctx context.Context, sessionID string, options *ExecStartOptions)
 	}
 
 	resp, err := conn.DoRequest(ctx, bytes.NewReader(bodyJSON), http.MethodPost, "/exec/%s/start", nil, nil, sessionID)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return resp.Process(nil)
+}
+
+// ExecRemove removes a given exec session.
+func ExecRemove(ctx context.Context, sessionID string, options *ExecRemoveOptions) error {
+	v := bindings.ServiceVersion(ctx)
+	// The exec remove endpoint was added in 4.8.
+	if v.Major < 4 || (v.Major == 4 && v.Minor < 8) {
+		// Do no call this endpoint as it will not be supported on the server and throw an "NOT FOUND" error.
+		return bindings.NewAPIVersionError("/exec/{id}/remove", v, "4.8.0")
+	}
+	if options == nil {
+		options = new(ExecRemoveOptions)
+	}
+	conn, err := bindings.GetClient(ctx)
+	if err != nil {
+		return err
+	}
+
+	logrus.Debugf("Removing exec session ID %q", sessionID)
+
+	// We force Detach to true
+	body := struct {
+		Force bool `json:"Force"`
+	}{
+		Force: false,
+	}
+
+	if options.Force != nil {
+		body.Force = *options.Force
+	}
+
+	bodyJSON, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+
+	resp, err := conn.DoRequest(ctx, bytes.NewReader(bodyJSON), http.MethodPost, "/exec/%s/remove", nil, nil, sessionID)
 	if err != nil {
 		return err
 	}

@@ -3,8 +3,8 @@ package server
 import (
 	"net/http"
 
-	"github.com/containers/podman/v4/pkg/api/handlers/compat"
-	"github.com/containers/podman/v4/pkg/api/handlers/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/compat"
+	"github.com/containers/podman/v5/pkg/api/handlers/libpod"
 	"github.com/gorilla/mux"
 )
 
@@ -125,7 +125,7 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	// tags:
 	//  - networks (compat)
 	// summary: Connect container to network
-	// description: Connect a container to a network.  This endpoint is current a no-op
+	// description: Connect a container to a network
 	// produces:
 	// - application/json
 	// parameters:
@@ -144,6 +144,8 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	//     description: OK
 	//   400:
 	//     $ref: "#/responses/badParamError"
+	//   403:
+	//     $ref: "#/responses/networkConnectedError"
 	//   500:
 	//     $ref: "#/responses/internalError"
 	r.HandleFunc(VersionedPath("/networks/{name}/connect"), s.APIHandler(compat.Connect)).Methods(http.MethodPost)
@@ -153,7 +155,7 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	// tags:
 	//  - networks (compat)
 	// summary: Disconnect container from network
-	// description: Disconnect a container from a network.  This endpoint is current a no-op
+	// description: Disconnect a container from a network
 	// produces:
 	// - application/json
 	// parameters:
@@ -234,6 +236,33 @@ func (s *APIServer) registerNetworkHandlers(r *mux.Router) error {
 	//   500:
 	//     $ref: "#/responses/internalError"
 	r.HandleFunc(VersionedPath("/libpod/networks/{name}"), s.APIHandler(libpod.RemoveNetwork)).Methods(http.MethodDelete)
+	// swagger:operation POST /libpod/networks/{name}/update libpod NetworkUpdateLibpod
+	// ---
+	// tags:
+	//  - networks
+	// summary: Update existing podman network
+	// description: Update existing podman network
+	// produces:
+	// - application/json
+	// parameters:
+	//  - in: path
+	//    name: name
+	//    type: string
+	//    required: true
+	//    description: the name or ID of the network
+	//  - in: body
+	//    name: update
+	//    description: attributes for updating a netavark network
+	//    schema:
+	//      $ref: "#/definitions/networkUpdateRequestLibpod"
+	// responses:
+	//   200:
+	//     description: OK
+	//   400:
+	//     $ref: "#/responses/badParamError"
+	//   500:
+	//     $ref: "#/responses/internalError"
+	r.HandleFunc(VersionedPath("/libpod/networks/{name}/update"), s.APIHandler(libpod.UpdateNetwork)).Methods(http.MethodPost)
 	// swagger:operation GET /libpod/networks/{name}/exists libpod NetworkExistsLibpod
 	// ---
 	// tags:

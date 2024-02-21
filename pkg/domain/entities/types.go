@@ -3,11 +3,11 @@ package entities
 import (
 	"net"
 
-	buildahDefine "github.com/containers/buildah/define"
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	entitiesTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/containers/storage/pkg/archive"
 	dockerAPI "github.com/docker/docker/api/types"
 )
@@ -98,25 +98,16 @@ type EventsOptions struct {
 }
 
 // ContainerCreateResponse is the response struct for creating a container
-type ContainerCreateResponse struct {
-	// ID of the container created
-	// required: true
-	ID string `json:"Id"`
-	// Warnings during container creation
-	// required: true
-	Warnings []string `json:"Warnings"`
-}
+type ContainerCreateResponse = entitiesTypes.ContainerCreateResponse
 
 // BuildOptions describe the options for building container images.
-type BuildOptions struct {
-	buildahDefine.BuildOptions
-}
+type BuildOptions = entitiesTypes.BuildOptions
 
 // BuildReport is the image-build report.
-type BuildReport struct {
-	// ID of the image.
-	ID string
-}
+type BuildReport = entitiesTypes.BuildReport
+
+// FarmBuildOptions describes the options for building container images on farm nodes
+type FarmBuildOptions = entitiesTypes.FarmBuildOptions
 
 type IDOrNameResponse struct {
 	// The Id or Name of an object

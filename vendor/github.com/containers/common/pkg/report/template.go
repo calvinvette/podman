@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
-	"regexp"
 	"strings"
 	"text/template"
 
 	"github.com/containers/common/pkg/report/camelcase"
+	"github.com/containers/storage/pkg/regexp"
 )
 
 // Template embeds template.Template to add functionality to methods
@@ -36,7 +36,7 @@ var escapedReplacer = strings.NewReplacer(
 
 var DefaultFuncs = FuncMap{
 	"join": strings.Join,
-	"json": func(v interface{}) string {
+	"json": func(v any) string {
 		buf := new(bytes.Buffer)
 		enc := json.NewEncoder(buf)
 		enc.SetEscapeHTML(false)
@@ -93,7 +93,7 @@ func truncateWithLength(source string, length int) string {
 //	1) unchanged --format includes headers
 //	2) --format '{{.ID}"        # no headers
 //	3) --format 'table {{.ID}}' # includes headers
-func Headers(object interface{}, overrides map[string]string) []map[string]string {
+func Headers(object any, overrides map[string]string) []map[string]string {
 	value := reflect.ValueOf(object)
 	if value.Kind() == reflect.Ptr {
 		value = value.Elem()
@@ -160,7 +160,7 @@ func (t *Template) IsTable() bool {
 	return t.isTable
 }
 
-var rangeRegex = regexp.MustCompile(`(?s){{\s*range\s*\.\s*}}.*{{\s*end\s*-?\s*}}`)
+var rangeRegex = regexp.Delayed(`(?s){{\s*range\s*\.\s*}}.*{{\s*end\s*-?\s*}}`)
 
 // EnforceRange ensures that the format string contains a range
 func EnforceRange(format string) string {

@@ -1,3 +1,5 @@
+//go:build !remote
+
 package generate
 
 import (
@@ -10,10 +12,10 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/systemd/define"
-	"github.com/containers/podman/v4/version"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/systemd/define"
+	"github.com/containers/podman/v5/version"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
@@ -170,6 +172,7 @@ func PodUnits(pod *libpod.Pod, options entities.GenerateSystemdOptions) (map[str
 		if ctr.ID() == infraID {
 			continue
 		}
+
 		ctrInfo, err := generateContainerInfo(ctr, options)
 		if err != nil {
 			return nil, err
@@ -383,7 +386,7 @@ func executePodTemplate(info *podInfo, options entities.GenerateSystemdOptions) 
 	}
 
 	if info.GenerateTimestamp {
-		info.TimeStamp = fmt.Sprintf("%v", time.Now().Format(time.UnixDate))
+		info.TimeStamp = time.Now().Format(time.UnixDate)
 	}
 
 	// Sort the slices to assure a deterministic output.

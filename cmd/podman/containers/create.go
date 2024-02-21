@@ -8,20 +8,22 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containers/buildah/pkg/cli"
+	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/config"
-	cutil "github.com/containers/common/pkg/util"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	"golang.org/x/exp/slices"
 	"golang.org/x/term"
 )
 
@@ -103,15 +105,8 @@ func init() {
 
 func commonFlags(cmd *cobra.Command) error {
 	var err error
-
-	report, err := registry.ContainerEngine().NetworkExists(registry.Context(), "pasta")
-	if err != nil {
-		return err
-	}
-	pastaNetworkNameExists := report.Value
-
 	flags := cmd.Flags()
-	cliVals.Net, err = common.NetFlagsToNetOptions(nil, *flags, pastaNetworkNameExists)
+	cliVals.Net, err = common.NetFlagsToNetOptions(nil, *flags)
 	if err != nil {
 		return err
 	}
@@ -132,11 +127,12 @@ func create(cmd *cobra.Command, args []string) error {
 		if !cmd.Flags().Changed("pod") {
 			return errors.New("must specify pod value with init-ctr")
 		}
-		if !cutil.StringInSlice(initctr, []string{define.AlwaysInitContainer, define.OneShotInitContainer}) {
+		if !slices.Contains([]string{define.AlwaysInitContainer, define.OneShotInitContainer}, initctr) {
 			return fmt.Errorf("init-ctr value must be '%s' or '%s'", define.AlwaysInitContainer, define.OneShotInitContainer)
 		}
 		cliVals.InitContainerType = initctr
 	}
+	// TODO: v5.0 block users from setting restart policy for a container if the container is in a pod
 
 	cliVals, err := CreateInit(cmd, cliVals, false)
 	if err != nil {
@@ -152,6 +148,13 @@ func create(cmd *cobra.Command, args []string) error {
 		}
 		imageName = name
 	}
+
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(cliVals.Authfile); err != nil {
+			return err
+		}
+	}
+
 	s := specgen.NewSpecGenerator(imageName, cliVals.RootFS)
 	if err := specgenutil.FillOutSpecGen(s, &cliVals, args); err != nil {
 		return err
@@ -170,6 +173,13 @@ func create(cmd *cobra.Command, args []string) error {
 
 	report, err := registry.ContainerEngine().ContainerCreate(registry.GetContext(), s)
 	if err != nil {
+		// if pod was created as part of run
+		// remove it in case ctr creation fails
+		if err := rmPodIfNecessary(cmd, s); err != nil {
+			if !errors.Is(err, define.ErrNoSuchPod) {
+				logrus.Error(err.Error())
+			}
+		}
 		return err
 	}
 
@@ -193,7 +203,24 @@ func replaceContainer(name string) error {
 		Force:  true, // force stop & removal
 		Ignore: true, // ignore errors when a container doesn't exit
 	}
-	return removeContainers([]string{name}, rmOptions, false)
+	return removeContainers([]string{name}, rmOptions, false, true)
+}
+
+func createOrUpdateFlags(cmd *cobra.Command, vals *entities.ContainerCreateOptions) error {
+	if cmd.Flags().Changed("pids-limit") {
+		val := cmd.Flag("pids-limit").Value.String()
+		// Convert -1 to 0, so that -1 maps to unlimited pids limit
+		if val == "-1" {
+			val = "0"
+		}
+		pidsLimit, err := strconv.ParseInt(val, 10, 32)
+		if err != nil {
+			return err
+		}
+		vals.PIDsLimit = &pidsLimit
+	}
+
+	return nil
 }
 
 func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra bool) (entities.ContainerCreateOptions, error) {
@@ -240,7 +267,7 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 					if registry.IsRemote() {
 						return vals, errors.New("the '--group-add keep-groups' option is not supported in remote mode")
 					}
-					vals.Annotation = append(vals.Annotation, "run.oci.keep_original_groups=1")
+					vals.Annotation = append(vals.Annotation, fmt.Sprintf("%s=1", define.RunOCIKeepOriginalGroups))
 				} else {
 					groups = append(groups, g)
 				}
@@ -255,18 +282,11 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 			}
 			vals.OOMScoreAdj = &val
 		}
-		if c.Flags().Changed("pids-limit") {
-			val := c.Flag("pids-limit").Value.String()
-			// Convert -1 to 0, so that -1 maps to unlimited pids limit
-			if val == "-1" {
-				val = "0"
-			}
-			pidsLimit, err := strconv.ParseInt(val, 10, 32)
-			if err != nil {
-				return vals, err
-			}
-			vals.PIDsLimit = &pidsLimit
+
+		if err := createOrUpdateFlags(c, &vals); err != nil {
+			return vals, err
 		}
+
 		if c.Flags().Changed("env") {
 			env, err := c.Flags().GetStringArray("env")
 			if err != nil {
@@ -284,6 +304,9 @@ func CreateInit(c *cobra.Command, vals entities.ContainerCreateOptions, isInfra 
 	}
 	if c.Flag("shm-size").Changed {
 		vals.ShmSize = c.Flag("shm-size").Value.String()
+	}
+	if c.Flag("shm-size-systemd").Changed {
+		vals.ShmSizeSystemd = c.Flag("shm-size-systemd").Value.String()
 	}
 	if (c.Flag("dns").Changed || c.Flag("dns-option").Changed || c.Flag("dns-search").Changed) && vals.Net != nil && (vals.Net.Network.NSMode == specgen.NoNetwork || vals.Net.Network.IsContainer()) {
 		return vals, fmt.Errorf("conflicting options: dns and the network mode: " + string(vals.Net.Network.NSMode))
@@ -319,10 +342,10 @@ func PullImage(imageName string, cliVals *entities.ContainerCreateOptions) (stri
 			if cliVals.Arch != "" || cliVals.OS != "" {
 				return "", errors.New("--platform option can not be specified with --arch or --os")
 			}
-			split := strings.SplitN(cliVals.Platform, "/", 2)
-			cliVals.OS = split[0]
-			if len(split) > 1 {
-				cliVals.Arch = split[1]
+			OS, Arch, hasArch := strings.Cut(cliVals.Platform, "/")
+			cliVals.OS = OS
+			if hasArch {
+				cliVals.Arch = Arch
 			}
 		}
 	}
@@ -332,7 +355,7 @@ func PullImage(imageName string, cliVals *entities.ContainerCreateOptions) (stri
 		skipTLSVerify = types.NewOptionalBool(!cliVals.TLSVerify.Value())
 	}
 
-	decConfig, err := util.DecryptConfig(cliVals.DecryptionKeys)
+	decConfig, err := cli.DecryptConfig(cliVals.DecryptionKeys)
 	if err != nil {
 		return "unable to obtain decryption config", err
 	}
@@ -362,6 +385,18 @@ func PullImage(imageName string, cliVals *entities.ContainerCreateOptions) (stri
 	return imageName, nil
 }
 
+func rmPodIfNecessary(cmd *cobra.Command, s *specgen.SpecGenerator) error {
+	if !strings.HasPrefix(cmd.Flag("pod").Value.String(), "new:") {
+		return nil
+	}
+
+	// errcheck not necessary since
+	// pod creation would've failed
+	podName := strings.Replace(s.Pod, "new:", "", 1)
+	_, err := registry.ContainerEngine().PodRm(context.Background(), []string{podName}, entities.PodRmOptions{})
+	return err
+}
+
 // createPodIfNecessary automatically creates a pod when requested.  if the pod name
 // has the form new:ID, the pod ID is created and the name in the spec generator is replaced
 // with ID.
@@ -377,7 +412,7 @@ func createPodIfNecessary(cmd *cobra.Command, s *specgen.SpecGenerator, netOpts 
 	var err error
 	uns := specgen.Namespace{NSMode: specgen.Default}
 	if cliVals.UserNS != "" {
-		uns, err = specgen.ParseNamespace(cliVals.UserNS)
+		uns, err = specgen.ParseUserNamespace(cliVals.UserNS)
 		if err != nil {
 			return err
 		}
@@ -392,6 +427,7 @@ func createPodIfNecessary(cmd *cobra.Command, s *specgen.SpecGenerator, netOpts 
 		CpusetCpus:    cliVals.CPUSetCPUs,
 		Pid:           cliVals.PID,
 		Userns:        uns,
+		Restart:       cliVals.Restart,
 	}
 	// Unset config values we passed to the pod to prevent them being used twice for the container and pod.
 	s.ContainerBasicConfig.Hostname = ""

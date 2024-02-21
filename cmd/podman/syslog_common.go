@@ -1,28 +1,24 @@
 //go:build linux || freebsd
-// +build linux freebsd
 
 package main
 
 import (
-	"fmt"
 	"log/syslog"
-	"os"
 
+	"github.com/containers/podman/v5/cmd/podman/registry"
 	"github.com/sirupsen/logrus"
 	logrusSyslog "github.com/sirupsen/logrus/hooks/syslog"
 )
 
 func syslogHook() {
-	if !useSyslog {
+	if !registry.PodmanConfig().Syslog {
 		return
 	}
 
 	hook, err := logrusSyslog.NewSyslogHook("", "", syslog.LOG_INFO, "")
 	if err != nil {
-		fmt.Fprint(os.Stderr, "Failed to initialize syslog hook: "+err.Error())
-		os.Exit(1)
-	}
-	if err == nil {
+		logrus.Debug("Failed to initialize syslog hook: " + err.Error())
+	} else {
 		logrus.AddHook(hook)
 	}
 }

@@ -1,3 +1,5 @@
+//go:build freebsd
+
 package qemu
 
 import (
@@ -10,4 +12,8 @@ func getRuntimeDir() (string, error) {
 		tmpDir = "/tmp"
 	}
 	return tmpDir, nil
+}
+
+func useNetworkRecover() bool {
+	return false
 }

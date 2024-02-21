@@ -3,11 +3,11 @@ package containers
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -23,7 +23,7 @@ var (
 		Annotations: map[string]string{registry.EngineMode: registry.ABIMode},
 		Use:         "unmount [options] CONTAINER [CONTAINER...]",
 		Aliases:     []string{"umount"},
-		Short:       "Unmounts working container's root filesystem",
+		Short:       "Unmount working container's root filesystem",
 		Long:        description,
 		RunE:        unmount,
 		Args: func(cmd *cobra.Command, args []string) error {
@@ -78,6 +78,7 @@ func init() {
 
 func unmount(cmd *cobra.Command, args []string) error {
 	var errs utils.OutputErrors
+	args = utils.RemoveSlash(args)
 	reports, err := registry.ContainerEngine().ContainerUnmount(registry.GetContext(), args, unmountOpts)
 	if err != nil {
 		return err

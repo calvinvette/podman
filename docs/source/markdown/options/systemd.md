@@ -7,7 +7,7 @@
 Run container in systemd mode. The default is **true**.
 
 - **true** enables systemd mode only when the command executed inside the container is *systemd*, */usr/sbin/init*,
-*/sbin/init* or */usr/local/sbin/init*, systemd mode is enabled.
+*/sbin/init* or */usr/local/sbin/init*.
 
 - **false** disables systemd mode.
 
@@ -19,11 +19,13 @@ Running the container in systemd mode causes the following changes:
   * _/run_
   * _/run/lock_
   * _/tmp_
-  * _/sys/fs/cgroup/systemd_
+  * _/sys/fs/cgroup/systemd_ (on a cgroup v1 system)
   * _/var/lib/journal_
 * Podman sets the default stop signal to **SIGRTMIN+3**.
 * Podman sets **container_uuid** environment variable in the container to the
-first 32 characters of the container id.
+first 32 characters of the container ID.
+* Podman does not mount virtual consoles (_/dev/tty\d+_) when running with **--privileged**.
+* On cgroup v2, */sys/fs/cgroup* is mounted writeable.
 
 This allows systemd to run in a confined container without any modifications.
 

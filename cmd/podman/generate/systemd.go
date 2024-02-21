@@ -9,12 +9,12 @@ import (
 
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	envLib "github.com/containers/podman/v4/pkg/env"
-	systemDefine "github.com/containers/podman/v4/pkg/systemd/define"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	envLib "github.com/containers/podman/v5/pkg/env"
+	systemDefine "github.com/containers/podman/v5/pkg/systemd/define"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +33,13 @@ const (
 )
 
 var (
+	deprecation = `
+DEPRECATED command:
+It is recommended to use Quadlets for running containers and pods under systemd.
+
+Please refer to podman-systemd.unit(5) for details.
+`
+
 	envInput           []string
 	files              bool
 	format             string
@@ -42,11 +49,12 @@ var (
 	stopTimeout        uint
 	systemdOptions     = entities.GenerateSystemdOptions{}
 	systemdDescription = `Generate systemd units for a pod or container.
-  The generated units can later be controlled via systemctl(1).`
+  The generated units can later be controlled via systemctl(1).
+` + deprecation
 
 	systemdCmd = &cobra.Command{
 		Use:               "systemd [options] {CONTAINER|POD}",
-		Short:             "Generate systemd units.",
+		Short:             "[DEPRECATED] Generate systemd units",
 		Long:              systemdDescription,
 		RunE:              systemd,
 		Args:              cobra.ExactArgs(1),
@@ -119,6 +127,7 @@ func init() {
 }
 
 func systemd(cmd *cobra.Command, args []string) error {
+	fmt.Fprint(os.Stderr, deprecation)
 	if cmd.Flags().Changed(restartPolicyFlagName) {
 		systemdOptions.RestartPolicy = &systemdRestart
 	}

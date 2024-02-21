@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,16 +15,17 @@ import (
 
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/docker/reference"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/bindings/containers"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/entities/reports"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/bindings/containers"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities/reports"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage/types"
 	"github.com/sirupsen/logrus"
 )
@@ -39,7 +41,7 @@ func (ic *ContainerEngine) ContainerExists(ctx context.Context, nameOrID string,
 
 func (ic *ContainerEngine) ContainerWait(ctx context.Context, namesOrIds []string, opts entities.WaitOptions) ([]entities.WaitReport, error) {
 	responses := make([]entities.WaitReport, 0, len(namesOrIds))
-	options := new(containers.WaitOptions).WithCondition(opts.Condition).WithInterval(opts.Interval.String())
+	options := new(containers.WaitOptions).WithConditions(opts.Conditions).WithInterval(opts.Interval.String())
 	for _, n := range namesOrIds {
 		response := entities.WaitReport{}
 		exitCode, err := containers.Wait(ic.ClientCtx, n, options)
@@ -182,7 +184,8 @@ func (ic *ContainerEngine) ContainerRestart(ctx context.Context, namesOrIds []st
 	)
 	options := new(containers.RestartOptions)
 	if to := opts.Timeout; to != nil {
-		options.WithTimeout(int(*to))
+		timeout := util.ConvertTimeout(int(*to))
+		options.WithTimeout(int(timeout))
 	}
 	ctrs, rawInputs, err := getContainersAndInputByContext(ic.ClientCtx, opts.All, false, namesOrIds, opts.Filters)
 	if err != nil {
@@ -345,7 +348,15 @@ func (ic *ContainerEngine) ContainerCommit(ctx context.Context, nameOrID string,
 			return nil, fmt.Errorf("invalid image name %q", opts.ImageName)
 		}
 	}
-	options := new(containers.CommitOptions).WithAuthor(opts.Author).WithChanges(opts.Changes).WithComment(opts.Message).WithSquash(opts.Squash)
+	var changes []string
+	if len(opts.Changes) > 0 {
+		changes = handlers.DecodeChanges(opts.Changes)
+	}
+	var configReader io.Reader
+	if len(opts.Config) > 0 {
+		configReader = bytes.NewReader(opts.Config)
+	}
+	options := new(containers.CommitOptions).WithAuthor(opts.Author).WithChanges(changes).WithComment(opts.Message).WithConfig(configReader).WithSquash(opts.Squash).WithStream(!opts.Quiet)
 	options.WithFormat(opts.Format).WithPause(opts.Pause).WithRepo(repo).WithTag(tag)
 	response, err := containers.Commit(ic.ClientCtx, nameOrID, options)
 	if err != nil {
@@ -578,13 +589,26 @@ func makeExecConfig(options entities.ExecOptions) *handlers.ExecCreateConfig {
 	return createConfig
 }
 
-func (ic *ContainerEngine) ContainerExec(ctx context.Context, nameOrID string, options entities.ExecOptions, streams define.AttachStreams) (int, error) {
+func (ic *ContainerEngine) ContainerExec(ctx context.Context, nameOrID string, options entities.ExecOptions, streams define.AttachStreams) (exitCode int, retErr error) {
 	createConfig := makeExecConfig(options)
 
 	sessionID, err := containers.ExecCreate(ic.ClientCtx, nameOrID, createConfig)
 	if err != nil {
 		return 125, err
 	}
+	defer func() {
+		if err := containers.ExecRemove(ic.ClientCtx, sessionID, nil); err != nil {
+			apiErr := new(bindings.APIVersionError)
+			if errors.As(err, &apiErr) {
+				// if the API is to old do not throw an error
+				return
+			}
+			if retErr == nil {
+				exitCode = -1
+				retErr = err
+			}
+		}
+	}()
 	startAndAttachOptions := new(containers.ExecStartAndAttachOptions)
 	startAndAttachOptions.WithOutputStream(streams.OutputStream).WithErrorStream(streams.ErrorStream)
 	if streams.InputStream != nil {
@@ -603,13 +627,18 @@ func (ic *ContainerEngine) ContainerExec(ctx context.Context, nameOrID string, o
 	return inspectOut.ExitCode, nil
 }
 
-func (ic *ContainerEngine) ContainerExecDetached(ctx context.Context, nameOrID string, options entities.ExecOptions) (string, error) {
+func (ic *ContainerEngine) ContainerExecDetached(ctx context.Context, nameOrID string, options entities.ExecOptions) (retSessionID string, retErr error) {
 	createConfig := makeExecConfig(options)
 
 	sessionID, err := containers.ExecCreate(ic.ClientCtx, nameOrID, createConfig)
 	if err != nil {
 		return "", err
 	}
+	defer func() {
+		if retErr != nil {
+			_ = containers.ExecRemove(ic.ClientCtx, sessionID, nil)
+		}
+	}()
 
 	if err := containers.ExecStart(ic.ClientCtx, sessionID, nil); err != nil {
 		return "", err
@@ -682,7 +711,7 @@ func logIfRmError(id string, err error, reports []*reports.RmReport) {
 func (ic *ContainerEngine) ContainerStart(ctx context.Context, namesOrIds []string, options entities.ContainerStartOptions) ([]*entities.ContainerStartReport, error) {
 	reports := []*entities.ContainerStartReport{}
 	var exitCode = define.ExecErrorCodeGeneric
-	ctrs, rawInputs, err := getContainersAndInputByContext(ic.ClientCtx, options.All, false, namesOrIds, options.Filters)
+	ctrs, rawInputs, err := getContainersAndInputByContext(ic.ClientCtx, options.All, len(options.Filters) > 0, namesOrIds, options.Filters)
 	if err != nil {
 		return nil, err
 	}
@@ -693,7 +722,12 @@ func (ic *ContainerEngine) ContainerStart(ctx context.Context, namesOrIds []stri
 		}
 	}
 	removeOptions := new(containers.RemoveOptions).WithVolumes(true).WithForce(false)
-	removeContainer := func(id string) {
+	removeContainer := func(id, CIDFile string) {
+		if CIDFile != "" {
+			if err := os.Remove(CIDFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				logrus.Warnf("Cleaning up CID file: %s", err)
+			}
+		}
 		reports, err := containers.Remove(ic.ClientCtx, id, removeOptions)
 		logIfRmError(id, err, reports)
 	}
@@ -722,7 +756,7 @@ func (ic *ContainerEngine) ContainerStart(ctx context.Context, namesOrIds []stri
 
 			if err != nil {
 				if ctr.AutoRemove {
-					removeContainer(ctr.ID)
+					removeContainer(ctr.ID, ctr.CIDFile)
 				}
 				report.ExitCode = define.ExitCode(report.Err)
 				report.Err = err
@@ -741,7 +775,7 @@ func (ic *ContainerEngine) ContainerStart(ctx context.Context, namesOrIds []stri
 					logrus.Errorf("Should restart: %v", shouldRestart)
 
 					if !shouldRestart && ctr.AutoRemove {
-						removeContainer(ctr.ID)
+						removeContainer(ctr.ID, ctr.CIDFile)
 					}
 				}()
 			}
@@ -754,7 +788,7 @@ func (ic *ContainerEngine) ContainerStart(ctx context.Context, namesOrIds []stri
 					logrus.Errorf("Cannot get exit code: %v", err)
 					report.ExitCode = define.ExecErrorCodeNotFound
 				} else {
-					report.ExitCode = event.ContainerExitCode
+					report.ExitCode = *event.ContainerExitCode
 				}
 			} else {
 				report.ExitCode = int(exitCode)
@@ -827,7 +861,13 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 	for _, w := range con.Warnings {
 		fmt.Fprintf(os.Stderr, "%s\n", w)
 	}
-	removeContainer := func(id string, force bool) error {
+	removeContainer := func(id, CIDFile string, force bool) error {
+		if CIDFile != "" {
+			if err := os.Remove(CIDFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				logrus.Warnf("Cleaning up CID file: %s", err)
+			}
+		}
+
 		removeOptions := new(containers.RemoveOptions).WithVolumes(true).WithForce(force)
 		reports, err := containers.Remove(ic.ClientCtx, id, removeOptions)
 		logIfRmError(id, err, reports)
@@ -837,7 +877,7 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 	if opts.CIDFile != "" {
 		if err := util.CreateIDFile(opts.CIDFile, con.ID); err != nil {
 			// If you fail to create CIDFile then remove the container
-			_ = removeContainer(con.ID, true)
+			_ = removeContainer(con.ID, opts.CIDFile, true)
 			return nil, err
 		}
 	}
@@ -850,9 +890,7 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 		if err != nil {
 			report.ExitCode = define.ExitCode(err)
 			if opts.Rm {
-				if rmErr := removeContainer(con.ID, true); rmErr != nil && !errors.Is(rmErr, define.ErrNoSuchCtr) {
-					logrus.Errorf("Container %s failed to be removed", con.ID)
-				}
+				_ = removeContainer(con.ID, opts.CIDFile, true)
 			}
 		}
 		return &report, err
@@ -873,7 +911,7 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 
 		report.ExitCode = define.ExitCode(err)
 		if opts.Rm {
-			_ = removeContainer(con.ID, false)
+			_ = removeContainer(con.ID, opts.CIDFile, false)
 		}
 		return &report, err
 	}
@@ -889,7 +927,7 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 			}
 
 			if !shouldRestart {
-				_ = removeContainer(con.ID, false)
+				_ = removeContainer(con.ID, opts.CIDFile, false)
 			}
 		}()
 	}
@@ -939,7 +977,7 @@ func (ic *ContainerEngine) ContainerRun(ctx context.Context, opts entities.Conta
 		return &report, nil //nolint: nilerr
 	}
 
-	report.ExitCode = lastEvent.ContainerExitCode
+	report.ExitCode = *lastEvent.ContainerExitCode
 	return &report, err
 }
 
@@ -1049,7 +1087,7 @@ func (ic *ContainerEngine) ContainerStats(ctx context.Context, namesOrIds []stri
 	if options.Latest {
 		return nil, errors.New("latest is not supported for the remote client")
 	}
-	return containers.Stats(ic.ClientCtx, namesOrIds, new(containers.StatsOptions).WithStream(options.Stream).WithInterval(options.Interval))
+	return containers.Stats(ic.ClientCtx, namesOrIds, new(containers.StatsOptions).WithStream(options.Stream).WithInterval(options.Interval).WithAll(options.All))
 }
 
 // ShouldRestart reports back whether the container will restart.

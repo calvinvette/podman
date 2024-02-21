@@ -3,7 +3,7 @@ package entities
 import (
 	"net"
 
-	"github.com/containers/common/libnetwork/types"
+	entitiesTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
 )
 
 // NetworkListOptions describes options for listing networks in cli
@@ -21,11 +21,7 @@ type NetworkReloadOptions struct {
 }
 
 // NetworkReloadReport describes the results of reloading a container network.
-type NetworkReloadReport struct {
-	//nolint:stylecheck,revive
-	Id  string
-	Err error
-}
+type NetworkReloadReport = entitiesTypes.NetworkReloadReport
 
 // NetworkRmOptions describes options for removing networks
 type NetworkRmOptions struct {
@@ -34,32 +30,37 @@ type NetworkRmOptions struct {
 }
 
 // NetworkRmReport describes the results of network removal
-type NetworkRmReport struct {
-	Name string
-	Err  error
-}
+type NetworkRmReport = entitiesTypes.NetworkRmReport
 
 // NetworkCreateOptions describes options to create a network
 type NetworkCreateOptions struct {
-	DisableDNS bool
-	Driver     string
-	Gateways   []net.IP
-	Internal   bool
-	Labels     map[string]string
-	MacVLAN    string
-	Ranges     []string
-	Subnets    []string
-	IPv6       bool
+	DisableDNS        bool
+	Driver            string
+	Gateways          []net.IP
+	Internal          bool
+	Labels            map[string]string
+	MacVLAN           string
+	NetworkDNSServers []string
+	Ranges            []string
+	Subnets           []string
+	Routes            []string
+	IPv6              bool
 	// Mapping of driver options and values.
 	Options map[string]string
 	// IgnoreIfExists if true, do not fail if the network already exists
 	IgnoreIfExists bool
+	// InterfaceName sets the NetworkInterface in the network config
+	InterfaceName string
+}
+
+// NetworkUpdateOptions describes options to update a network
+type NetworkUpdateOptions struct {
+	AddDNSServers    []string `json:"adddnsservers"`
+	RemoveDNSServers []string `json:"removednsservers"`
 }
 
 // NetworkCreateReport describes a created network for the cli
-type NetworkCreateReport struct {
-	Name string
-}
+type NetworkCreateReport = entitiesTypes.NetworkCreateReport
 
 // NetworkDisconnectOptions describes options for disconnecting
 // containers from networks
@@ -70,18 +71,12 @@ type NetworkDisconnectOptions struct {
 
 // NetworkConnectOptions describes options for connecting
 // a container to a network
-type NetworkConnectOptions struct {
-	Container string `json:"container"`
-	types.PerNetworkOptions
-}
+type NetworkConnectOptions = entitiesTypes.NetworkConnectOptions
 
 // NetworkPruneReport containers the name of network and an error
 // associated in its pruning (removal)
 // swagger:model NetworkPruneReport
-type NetworkPruneReport struct {
-	Name  string
-	Error error
-}
+type NetworkPruneReport = entitiesTypes.NetworkPruneReport
 
 // NetworkPruneOptions describes options for pruning unused networks
 type NetworkPruneOptions struct {

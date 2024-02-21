@@ -5,9 +5,9 @@ import (
 	"fmt"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/parse"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/parse"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +48,7 @@ func init() {
 	_ = createCommand.RegisterFlagCompletionFunc(driverFlagName, completion.AutocompleteNone)
 
 	labelFlagName := "label"
-	flags.StringSliceVarP(&opts.Label, labelFlagName, "l", []string{}, "Set metadata for a volume (default [])")
+	flags.StringArrayVarP(&opts.Label, labelFlagName, "l", []string{}, "Set metadata for a volume (default [])")
 	_ = createCommand.RegisterFlagCompletionFunc(labelFlagName, completion.AutocompleteNone)
 
 	optFlagName := "opt"

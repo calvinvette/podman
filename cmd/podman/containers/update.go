@@ -3,12 +3,13 @@ package containers
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,7 @@ var (
 
 	updateCommand = &cobra.Command{
 		Use:               "update [options] CONTAINER",
-		Short:             "update an existing container",
+		Short:             "Update an existing container",
 		Long:              updateDescription,
 		RunE:              update,
 		Args:              cobra.ExactArgs(1),
@@ -64,6 +65,11 @@ func update(cmd *cobra.Command, args []string) error {
 	s := &specgen.SpecGenerator{}
 	s.ResourceLimits = &specs.LinuxResources{}
 
+	err = createOrUpdateFlags(cmd, &updateOpts)
+	if err != nil {
+		return err
+	}
+
 	// we need to pass the whole specgen since throttle devices are parsed later due to cross compat.
 	s.ResourceLimits, err = specgenutil.GetResources(s, &updateOpts)
 	if err != nil {
@@ -71,7 +77,7 @@ func update(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := &entities.ContainerUpdateOptions{
-		NameOrID: args[0],
+		NameOrID: strings.TrimPrefix(args[0], "/"),
 		Specgen:  s,
 	}
 	rep, err := registry.ContainerEngine().ContainerUpdate(context.Background(), opts)

@@ -1,5 +1,4 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
@@ -9,9 +8,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/events"
-	"github.com/containers/podman/v4/pkg/machine"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/events"
+	"github.com/containers/podman/v5/pkg/machine"
+	"github.com/containers/podman/v5/pkg/machine/define"
+	"github.com/containers/podman/v5/pkg/machine/shim"
+	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -20,10 +23,10 @@ var (
 		Use:               "rm [options] [MACHINE]",
 		Short:             "Remove an existing machine",
 		Long:              "Remove a managed virtual machine ",
-		PersistentPreRunE: rootlessOnly,
+		PersistentPreRunE: machinePreRunE,
 		RunE:              rm,
 		Args:              cobra.MaximumNArgs(1),
-		Example:           `podman machine rm myvm`,
+		Example:           `podman machine rm podman-machine-default`,
 		ValidArgsFunction: autocompleteMachine,
 	}
 )
@@ -42,9 +45,6 @@ func init() {
 	formatFlagName := "force"
 	flags.BoolVarP(&destroyOptions.Force, formatFlagName, "f", false, "Stop and do not prompt before rming")
 
-	keysFlagName := "save-keys"
-	flags.BoolVar(&destroyOptions.SaveKeys, keysFlagName, false, "Do not delete SSH keys")
-
 	ignitionFlagName := "save-ignition"
 	flags.BoolVar(&destroyOptions.SaveIgnition, ignitionFlagName, false, "Do not delete ignition file")
 
@@ -55,26 +55,56 @@ func init() {
 func rm(_ *cobra.Command, args []string) error {
 	var (
 		err error
-		vm  machine.VM
 	)
 	vmName := defaultMachineName
 	if len(args) > 0 && len(args[0]) > 0 {
 		vmName = args[0]
 	}
 
-	provider := GetSystemDefaultProvider()
-	vm, err = provider.LoadVMByName(vmName)
-	if err != nil {
-		return err
-	}
-	confirmationMessage, remove, err := vm.Remove(vmName, destroyOptions)
+	dirs, err := machine.GetMachineDirs(provider.VMType())
 	if err != nil {
 		return err
 	}
 
+	mc, err := vmconfigs.LoadMachineByName(vmName, dirs)
+	if err != nil {
+		return err
+	}
+
+	state, err := provider.State(mc, false)
+	if err != nil {
+		return err
+	}
+
+	if state == define.Running {
+		if !destroyOptions.Force {
+			return &define.ErrVMRunningCannotDestroyed{Name: vmName}
+		}
+		if err := shim.Stop(mc, provider, dirs, true); err != nil {
+			return err
+		}
+	}
+
+	rmFiles, genericRm, err := mc.Remove(destroyOptions.SaveIgnition, destroyOptions.SaveImage)
+	if err != nil {
+		return err
+	}
+
+	providerFiles, providerRm, err := provider.Remove(mc)
+	if err != nil {
+		return err
+	}
+
+	// Add provider specific files to the list
+	rmFiles = append(rmFiles, providerFiles...)
+
+	// Important!
+	// Nothing can be removed at this point.  The user can still opt out below
+	//
+
 	if !destroyOptions.Force {
 		// Warn user
-		fmt.Println(confirmationMessage)
+		confirmationMessage(rmFiles)
 		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("Are you sure you want to continue? [y/N] ")
 		answer, err := reader.ReadString('\n')
@@ -85,10 +115,27 @@ func rm(_ *cobra.Command, args []string) error {
 			return nil
 		}
 	}
-	err = remove()
-	if err != nil {
-		return err
+
+	//
+	// All actual removal of files and vms should occur after this
+	//
+
+	// TODO Should this be a hard error?
+	if err := providerRm(); err != nil {
+		logrus.Errorf("failed to remove virtual machine from provider for %q", vmName)
+	}
+
+	// TODO Should this be a hard error?
+	if err := genericRm(); err != nil {
+		logrus.Error("failed to remove machines files")
 	}
 	newMachineEvent(events.Remove, events.Event{Name: vmName})
 	return nil
+}
+
+func confirmationMessage(files []string) {
+	fmt.Printf("The following files will be deleted:\n\n\n")
+	for _, msg := range files {
+		fmt.Println(msg)
+	}
 }

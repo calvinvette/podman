@@ -13,18 +13,21 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/containers/buildah/define"
-	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/bindings"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	imageTypes "github.com/containers/image/v5/types"
+	ldefine "github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/bindings"
+	"github.com/containers/podman/v5/pkg/domain/entities/types"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/ioutils"
+	"github.com/containers/storage/pkg/regexp"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-units"
 	"github.com/hashicorp/go-multierror"
 	jsoniter "github.com/json-iterator/go"
@@ -36,12 +39,18 @@ type devino struct {
 	Ino uint64
 }
 
-var (
-	iidRegex = regexp.MustCompile(`^[0-9a-f]{12}`)
-)
+var iidRegex = regexp.Delayed(`^[0-9a-f]{12}`)
+
+type BuildResponse struct {
+	Stream string                 `json:"stream,omitempty"`
+	Error  *jsonmessage.JSONError `json:"errorDetail,omitempty"`
+	// NOTE: `error` is being deprecated check https://github.com/moby/moby/blob/master/pkg/jsonmessage/jsonmessage.go#L148
+	ErrorMessage string          `json:"error,omitempty"` // deprecate this slowly
+	Aux          json.RawMessage `json:"aux,omitempty"`
+}
 
 // Build creates an image using a containerfile reference
-func Build(ctx context.Context, containerFiles []string, options entities.BuildOptions) (*entities.BuildReport, error) {
+func Build(ctx context.Context, containerFiles []string, options types.BuildOptions) (*types.BuildReport, error) {
 	if options.CommonBuildOpts == nil {
 		options.CommonBuildOpts = new(define.CommonBuildOptions)
 	}
@@ -218,6 +227,9 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		params.Set("apparmor", options.CommonBuildOpts.ApparmorProfile)
 	}
 
+	for _, layerLabel := range options.LayerLabels {
+		params.Add("layerLabel", layerLabel)
+	}
 	if options.Layers {
 		params.Set("layers", "1")
 	}
@@ -243,9 +255,9 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 	}
 
 	switch options.SkipUnusedStages {
-	case types.OptionalBoolTrue:
+	case imageTypes.OptionalBoolTrue:
 		params.Set("skipunusedstages", "1")
-	case types.OptionalBoolFalse:
+	case imageTypes.OptionalBoolFalse:
 		params.Set("skipunusedstages", "0")
 	}
 
@@ -299,6 +311,12 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 	if len(options.Platforms) > 0 {
 		params.Del("platform")
 		for _, platformSpec := range options.Platforms {
+			// podman-cli will send empty struct, in such
+			// case don't add platform to param and let the
+			// build backend decide the default platform.
+			if platformSpec.OS == "" && platformSpec.Arch == "" && platformSpec.Variant == "" {
+				continue
+			}
 			platform = platformSpec.OS + "/" + platformSpec.Arch
 			if platformSpec.Variant != "" {
 				platform += "/" + platformSpec.Variant
@@ -311,6 +329,10 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		params.Add("volume", volume)
 	}
 
+	for _, group := range options.GroupAdd {
+		params.Add("groupadd", group)
+	}
+
 	var err error
 	var contextDir string
 	if contextDir, err = filepath.EvalSymlinks(options.ContextDirectory); err == nil {
@@ -320,9 +342,9 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 	params.Set("pullpolicy", options.PullPolicy.String())
 
 	switch options.CommonBuildOpts.IdentityLabel {
-	case types.OptionalBoolTrue:
+	case imageTypes.OptionalBoolTrue:
 		params.Set("identitylabel", "1")
-	case types.OptionalBoolFalse:
+	case imageTypes.OptionalBoolFalse:
 		params.Set("identitylabel", "0")
 	}
 	if options.Quiet {
@@ -381,6 +403,10 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		params.Add("unsetenv", uenv)
 	}
 
+	for _, ulabel := range options.UnsetLabels {
+		params.Add("unsetlabel", ulabel)
+	}
+
 	var (
 		headers http.Header
 	)
@@ -390,7 +416,7 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		} else {
 			headers, err = auth.MakeXRegistryConfigHeader(options.SystemContext, "", "")
 		}
-		if options.SystemContext.DockerInsecureSkipTLSVerify == types.OptionalBoolTrue {
+		if options.SystemContext.DockerInsecureSkipTLSVerify == imageTypes.OptionalBoolTrue {
 			params.Set("tlsVerify", "false")
 		}
 	}
@@ -401,14 +427,6 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 	stdout := io.Writer(os.Stdout)
 	if options.Out != nil {
 		stdout = options.Out
-	}
-
-	excludes := options.Excludes
-	if len(excludes) == 0 {
-		excludes, err = parseDockerignore(options.ContextDirectory)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	contextDir, err = filepath.Abs(options.ContextDirectory)
@@ -422,6 +440,11 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 
 	dontexcludes := []string{"!Dockerfile", "!Containerfile", "!.dockerignore", "!.containerignore"}
 	for _, c := range containerFiles {
+		// Don not add path to containerfile if it is a URL
+		if strings.HasPrefix(c, "http://") || strings.HasPrefix(c, "https://") {
+			newContainerFiles = append(newContainerFiles, c)
+			continue
+		}
 		if c == "/dev/stdin" {
 			content, err := io.ReadAll(os.Stdin)
 			if err != nil {
@@ -456,6 +479,8 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		if strings.HasPrefix(containerfile, contextDir+string(filepath.Separator)) {
 			containerfile = strings.TrimPrefix(containerfile, contextDir+string(filepath.Separator))
 			dontexcludes = append(dontexcludes, "!"+containerfile)
+			dontexcludes = append(dontexcludes, "!"+containerfile+".dockerignore")
+			dontexcludes = append(dontexcludes, "!"+containerfile+".containerignore")
 		} else {
 			// If Containerfile does not exist, assume it is in context directory and do Not add to tarfile
 			if _, err := os.Lstat(containerfile); err != nil {
@@ -463,6 +488,9 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 					return nil, err
 				}
 				containerfile = c
+				dontexcludes = append(dontexcludes, "!"+containerfile)
+				dontexcludes = append(dontexcludes, "!"+containerfile+".dockerignore")
+				dontexcludes = append(dontexcludes, "!"+containerfile+".containerignore")
 			} else {
 				// If Containerfile does exist and not in the context directory, add it to the tarfile
 				tarContent = append(tarContent, containerfile)
@@ -470,12 +498,26 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 		}
 		newContainerFiles = append(newContainerFiles, filepath.ToSlash(containerfile))
 	}
+
 	if len(newContainerFiles) > 0 {
 		cFileJSON, err := json.Marshal(newContainerFiles)
 		if err != nil {
 			return nil, err
 		}
 		params.Set("dockerfile", string(cFileJSON))
+	}
+
+	excludes := options.Excludes
+	if len(excludes) == 0 {
+		excludes, _, err = util.ParseDockerignore(newContainerFiles, options.ContextDirectory)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	saveFormat := ldefine.OCIArchive
+	if options.OutputFormat == define.Dockerv2ImageManifest {
+		saveFormat = ldefine.V2s2Archive
 	}
 
 	// build secrets are usually absolute host path or relative to context dir on host
@@ -488,9 +530,9 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 			if len(secretOpt) > 0 {
 				modifiedOpt := []string{}
 				for _, token := range secretOpt {
-					arr := strings.SplitN(token, "=", 2)
-					if len(arr) > 1 {
-						if arr[0] == "src" {
+					opt, val, hasVal := strings.Cut(token, "=")
+					if hasVal {
+						if opt == "src" {
 							// read specified secret into a tmp file
 							// move tmp file to tar and change secret source to relative tmp file
 							tmpSecretFile, err := os.CreateTemp(options.ContextDirectory, "podman-build-secret")
@@ -499,7 +541,7 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 							}
 							defer os.Remove(tmpSecretFile.Name()) // clean up
 							defer tmpSecretFile.Close()
-							srcSecretFile, err := os.Open(arr[1])
+							srcSecretFile, err := os.Open(val)
 							if err != nil {
 								return nil, err
 							}
@@ -570,17 +612,13 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 
 	var id string
 	for {
-		var s struct {
-			Stream string `json:"stream,omitempty"`
-			Error  string `json:"error,omitempty"`
-		}
-
+		var s BuildResponse
 		select {
 		// FIXME(vrothberg): it seems we always hit the EOF case below,
 		// even when the server quit but it seems desirable to
 		// distinguish a proper build from a transient EOF.
 		case <-response.Request.Context().Done():
-			return &entities.BuildReport{ID: id}, nil
+			return &types.BuildReport{ID: id, SaveFormat: saveFormat}, nil
 		default:
 			// non-blocking select
 		}
@@ -594,7 +632,7 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 			if errors.Is(err, io.EOF) && id != "" {
 				break
 			}
-			return &entities.BuildReport{ID: id}, fmt.Errorf("decoding stream: %w", err)
+			return &types.BuildReport{ID: id, SaveFormat: saveFormat}, fmt.Errorf("decoding stream: %w", err)
 		}
 
 		switch {
@@ -604,15 +642,15 @@ func Build(ctx context.Context, containerFiles []string, options entities.BuildO
 			if iidRegex.Match(raw) {
 				id = strings.TrimSuffix(s.Stream, "\n")
 			}
-		case s.Error != "":
+		case s.Error != nil:
 			// If there's an error, return directly.  The stream
 			// will be closed on return.
-			return &entities.BuildReport{ID: id}, errors.New(s.Error)
+			return &types.BuildReport{ID: id, SaveFormat: saveFormat}, errors.New(s.Error.Message)
 		default:
-			return &entities.BuildReport{ID: id}, errors.New("failed to parse build results stream, unexpected input")
+			return &types.BuildReport{ID: id, SaveFormat: saveFormat}, errors.New("failed to parse build results stream, unexpected input")
 		}
 	}
-	return &entities.BuildReport{ID: id}, nil
+	return &types.BuildReport{ID: id, SaveFormat: saveFormat}, nil
 }
 
 func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
@@ -635,14 +673,14 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 		defer gw.Close()
 		defer tw.Close()
 		seen := make(map[devino]string)
-		for _, src := range sources {
-			s, err := filepath.Abs(src)
+		for i, src := range sources {
+			source, err := filepath.Abs(src)
 			if err != nil {
 				logrus.Errorf("Cannot stat one of source context: %v", err)
 				merr = multierror.Append(merr, err)
 				return
 			}
-			err = filepath.WalkDir(s, func(path string, d fs.DirEntry, err error) error {
+			err = filepath.WalkDir(source, func(path string, dentry fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
@@ -650,9 +688,9 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 				separator := string(filepath.Separator)
 				// check if what we are given is an empty dir, if so then continue w/ it. Else return.
 				// if we are given a file or a symlink, we do not want to exclude it.
-				if s == path {
+				if source == path {
 					separator = ""
-					if d.IsDir() {
+					if dentry.IsDir() {
 						var p *os.File
 						p, err = os.Open(path)
 						if err != nil {
@@ -660,28 +698,40 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 						}
 						defer p.Close()
 						_, err = p.Readdir(1)
-						if err != io.EOF {
+						if err == nil {
 							return nil // non empty root dir, need to return
-						} else if err != nil {
+						}
+						if err != io.EOF {
 							logrus.Errorf("While reading directory %v: %v", path, err)
 						}
 					}
 				}
-				name := filepath.ToSlash(strings.TrimPrefix(path, s+separator))
-
-				excluded, err := pm.Matches(name) //nolint:staticcheck
-				if err != nil {
-					return fmt.Errorf("checking if %q is excluded: %w", name, err)
+				var name string
+				if i == 0 {
+					name = filepath.ToSlash(strings.TrimPrefix(path, source+separator))
+				} else {
+					if !dentry.Type().IsRegular() {
+						return fmt.Errorf("path %s must be a regular file", path)
+					}
+					name = filepath.ToSlash(path)
 				}
-				if excluded {
-					// Note: filepath.SkipDir is not possible to use given .dockerignore semantics.
-					// An exception to exclusions may include an excluded directory, therefore we
-					// are required to visit all files. :(
-					return nil
+				// If name is absolute path, then it has to be containerfile outside of build context.
+				// If not, we should check it for being excluded via pattern matcher.
+				if !filepath.IsAbs(name) {
+					excluded, err := pm.Matches(name) //nolint:staticcheck
+					if err != nil {
+						return fmt.Errorf("checking if %q is excluded: %w", name, err)
+					}
+					if excluded {
+						// Note: filepath.SkipDir is not possible to use given .dockerignore semantics.
+						// An exception to exclusions may include an excluded directory, therefore we
+						// are required to visit all files. :(
+						return nil
+					}
 				}
 				switch {
-				case d.Type().IsRegular(): // add file item
-					info, err := d.Info()
+				case dentry.Type().IsRegular(): // add file item
+					info, err := dentry.Info()
 					if err != nil {
 						return err
 					}
@@ -720,8 +770,8 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 						seen[di] = name
 					}
 					return err
-				case d.IsDir(): // add folders
-					info, err := d.Info()
+				case dentry.IsDir(): // add folders
+					info, err := dentry.Info()
 					if err != nil {
 						return err
 					}
@@ -734,12 +784,12 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 					if lerr := tw.WriteHeader(hdr); lerr != nil {
 						return lerr
 					}
-				case d.Type()&os.ModeSymlink != 0: // add symlinks as it, not content
+				case dentry.Type()&os.ModeSymlink != 0: // add symlinks as it, not content
 					link, err := os.Readlink(path)
 					if err != nil {
 						return err
 					}
-					info, err := d.Info()
+					info, err := dentry.Info()
 					if err != nil {
 						return err
 					}
@@ -766,24 +816,4 @@ func nTar(excludes []string, sources ...string) (io.ReadCloser, error) {
 		return pr.Close()
 	})
 	return rc, nil
-}
-
-func parseDockerignore(root string) ([]string, error) {
-	ignore, err := os.ReadFile(filepath.Join(root, ".containerignore"))
-	if err != nil {
-		var dockerIgnoreErr error
-		ignore, dockerIgnoreErr = os.ReadFile(filepath.Join(root, ".dockerignore"))
-		if dockerIgnoreErr != nil && !os.IsNotExist(dockerIgnoreErr) {
-			return nil, err
-		}
-	}
-	rawexcludes := strings.Split(string(ignore), "\n")
-	excludes := make([]string, 0, len(rawexcludes))
-	for _, e := range rawexcludes {
-		if len(e) == 0 || e[0] == '#' {
-			continue
-		}
-		excludes = append(excludes, e)
-	}
-	return excludes, nil
 }

@@ -6,9 +6,9 @@ import (
 
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/image/v5/types"
-	podmanRegistry "github.com/containers/podman/v4/hack/podman-registry-go"
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	. "github.com/onsi/ginkgo"
+	podmanRegistry "github.com/containers/podman/v5/hack/podman-registry-go"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 )
@@ -22,10 +22,14 @@ var _ = Describe("Podman images", func() {
 	)
 
 	BeforeEach(func() {
+		registryOptions := &podmanRegistry.Options{
+			PodmanPath: getPodmanBinary(),
+		}
+
 		// Note: we need to start the registry **before** setting up
 		// the test. Otherwise, the registry is not reachable for
 		// currently unknown reasons.
-		registry, err = podmanRegistry.Start()
+		registry, err = podmanRegistry.StartWithOptions(registryOptions)
 		Expect(err).ToNot(HaveOccurred())
 
 		bt = newBindingTest()
@@ -44,7 +48,7 @@ var _ = Describe("Podman images", func() {
 	})
 
 	// Test using credentials.
-	It("tag + push + pull (with credentials)", func() {
+	It("tag + push + pull + search (with credentials)", func() {
 
 		imageRep := "localhost:" + registry.Port + "/test"
 		imageTag := "latest"
@@ -64,6 +68,11 @@ var _ = Describe("Podman images", func() {
 		// Now pull the image.
 		pullOpts := new(images.PullOptions)
 		_, err = images.Pull(bt.conn, imageRef, pullOpts.WithSkipTLSVerify(true).WithPassword(registry.Password).WithUsername(registry.User))
+		Expect(err).ToNot(HaveOccurred())
+
+		// Last, but not least, exercise search.
+		searchOptions := new(images.SearchOptions)
+		_, err = images.Search(bt.conn, imageRef, searchOptions.WithSkipTLSVerify(true).WithPassword(registry.Password).WithUsername(registry.User))
 		Expect(err).ToNot(HaveOccurred())
 	})
 

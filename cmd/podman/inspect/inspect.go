@@ -9,12 +9,11 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/containers/common/pkg/completion"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +27,7 @@ func AddInspectFlagSet(cmd *cobra.Command) *entities.InspectOptions {
 
 	formatFlagName := "format"
 	flags.StringVarP(&opts.Format, formatFlagName, "f", "json", "Format the output to a Go template or json")
-	_ = cmd.RegisterFlagCompletionFunc(formatFlagName, completion.AutocompleteNone)
+	_ = cmd.RegisterFlagCompletionFunc(formatFlagName, common.AutocompleteFormat(nil)) // passing nil as the type selection logic is in AutocompleteFormat function
 
 	typeFlagName := "type"
 	flags.StringVarP(&opts.Type, typeFlagName, "t", common.AllType, "Specify inspect-object type")
@@ -124,7 +123,7 @@ func (i *inspector) inspect(namesOrIDs []string) error {
 		for i := range ctrData {
 			data = append(data, ctrData[i])
 		}
-	case common.PodType, common.PodLegacyType:
+	case common.PodType:
 		podData, allErrs, err := i.containerEngine.PodInspect(ctx, namesOrIDs, i.options)
 		if err != nil {
 			return err
@@ -164,14 +163,7 @@ func (i *inspector) inspect(namesOrIDs []string) error {
 	var err error
 	switch {
 	case report.IsJSON(i.options.Format) || i.options.Format == "":
-		if i.options.Type == common.PodLegacyType && len(data) == 1 {
-			// We need backwards compat with the old podman pod inspect behavior.
-			// https://github.com/containers/podman/pull/15675
-			// TODO (5.0): consider removing this to better match other commands.
-			err = printJSON(data[0])
-		} else {
-			err = printJSON(data)
-		}
+		err = printJSON(data)
 	default:
 		// Landing here implies user has given a custom --format
 		var rpt *report.Formatter
@@ -185,16 +177,16 @@ func (i *inspector) inspect(namesOrIDs []string) error {
 		err = rpt.Execute(data)
 	}
 	if err != nil {
-		errs = append(errs, fmt.Errorf("printing inspect output: %w", err))
+		errs = append(errs, err)
 	}
 
 	if len(errs) > 0 {
 		if len(errs) > 1 {
 			for _, err := range errs[1:] {
-				fmt.Fprintf(os.Stderr, "error inspecting object: %v\n", err)
+				fmt.Fprintf(os.Stderr, "%v\n", err)
 			}
 		}
-		return fmt.Errorf("inspecting object: %w", errs[0])
+		return errs[0]
 	}
 	return nil
 }

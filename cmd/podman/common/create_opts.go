@@ -1,9 +1,9 @@
 package common
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 )
 
 func ulimits() []string {
@@ -32,13 +32,6 @@ func Env() []string {
 		return podmanConfig.ContainersConfDefaultsRO.Env()
 	}
 	return nil
-}
-
-func initPath() string {
-	if !registry.IsRemote() {
-		return podmanConfig.ContainersConfDefaultsRO.InitPath()
-	}
-	return ""
 }
 
 func pidsLimit() int64 {
@@ -92,5 +85,4 @@ func DefineCreateDefaults(opts *entities.ContainerCreateOptions) {
 	opts.Ulimit = ulimits()
 	opts.SeccompPolicy = "default"
 	opts.Volume = volumes()
-	opts.PIDsLimit = &podmanConfig.ContainersConf.Containers.PidsLimit
 }

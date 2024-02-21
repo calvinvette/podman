@@ -3,10 +3,10 @@ package bindings_test
 import (
 	"bytes"
 
-	"github.com/containers/podman/v4/pkg/bindings/images"
-	"github.com/containers/podman/v4/pkg/bindings/kube"
-	"github.com/containers/podman/v4/pkg/bindings/manifests"
-	. "github.com/onsi/ginkgo"
+	"github.com/containers/podman/v5/pkg/bindings/images"
+	"github.com/containers/podman/v5/pkg/bindings/kube"
+	"github.com/containers/podman/v5/pkg/bindings/manifests"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 

@@ -1,36 +1,13 @@
 package integration
 
 import (
-	"os"
-
-	. "github.com/containers/podman/v4/test/utils"
-	. "github.com/onsi/ginkgo"
+	. "github.com/containers/podman/v5/test/utils"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman untag", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
-
-	BeforeEach(func() {
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-
-	})
 
 	It("podman untag all", func() {
 		podmanTest.AddImageToRWStore(CIRROS_IMAGE)
@@ -40,19 +17,19 @@ var _ = Describe("Podman untag", func() {
 		cmd = append(cmd, tags...)
 		session := podmanTest.Podman(cmd)
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		// Make sure that all tags exists.
 		for _, t := range tags {
 			session = podmanTest.Podman([]string{"image", "exists", t})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 		}
 
 		// No arguments -> remove all tags.
 		session = podmanTest.Podman([]string{"untag", CIRROS_IMAGE})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		// Make sure that none of tags exists anymore.
 		for _, t := range tags {
@@ -79,15 +56,15 @@ var _ = Describe("Podman untag", func() {
 		for _, tt := range tests {
 			session := podmanTest.Podman([]string{"tag", CIRROS_IMAGE, tt.tag})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 
 			session = podmanTest.Podman([]string{"image", "exists", tt.normalized})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 
 			session = podmanTest.Podman([]string{"untag", CIRROS_IMAGE, tt.tag})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 
 			session = podmanTest.Podman([]string{"image", "exists", tt.normalized})
 			session.WaitWithDefaultTimeout()

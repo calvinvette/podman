@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -51,7 +51,7 @@ func IDOrLatestArgs(cmd *cobra.Command, args []string) error {
 }
 
 // CheckAllLatestAndCIDFile checks that --all and --latest are used correctly for containers and pods
-// If idFileFlag is set is set, also checks for the --cidfile or --pod-id-file flag.
+// If idFileFlag is set, also checks for the --cidfile or --pod-id-file flag.
 // Note: this has been deprecated, use CheckAllLatestAndIDFile instead
 func CheckAllLatestAndCIDFile(c *cobra.Command, args []string, ignoreArgLen bool, cidfile bool) error {
 	return CheckAllLatestAndIDFile(c, args, ignoreArgLen, "cidfile")

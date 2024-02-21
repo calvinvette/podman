@@ -5,6 +5,7 @@
 
 load helpers
 
+# bats test_tags=distro-integration
 @test "podman kill - test signal handling in containers" {
 
     # Prepare for 'logs -f'
@@ -24,10 +25,9 @@ load helpers
     run_podman run -d ${opt_log_driver} $IMAGE sh -c \
         "for i in ${signals[*]}; do trap \"echo got: \$i\" \$i; done;
         echo READY;
-        while ! test -e /stop; do sleep 0.05; done;
+        while ! test -e /stop; do sleep 0.1; done;
         echo DONE"
-    # Ignore output regarding pulling/processing container images
-    cid=$(echo "$output" | tail -1)
+    cid="$output"
 
     # Run 'logs -f' on that container, but run it in the background with
     # redirection to a named pipe from which we (foreground job) read
@@ -71,8 +71,10 @@ load helpers
     kill_and_check -SIGUSR1 10
     kill_and_check  SIGUSR2 12
 
-    # Done. Tell the container to stop, and wait for final DONE
-    run_podman exec $cid touch /stop
+    # Done. Tell the container to stop, and wait for final DONE.
+    # The '-d' is because container exit is racy: the exec process itself
+    # could get caught and killed by cleanup, causing this step to exit 137
+    run_podman exec -d $cid touch /stop
     read -t 5 -u 5 done || die "Timed out waiting for DONE from container"
     is "$done" "DONE" "final log message from container"
 
@@ -143,12 +145,28 @@ load helpers
 @test "podman wait - exit codes" {
     random_name=$(random_string 10)
     run_podman create --name=$random_name $IMAGE /no/such/command
+    run_podman container inspect  --format "{{.State.StoppedByUser}}" $random_name
+    is "$output" "false" "container not marked to be stopped by a user"
     # Container never ran -> exit code == 0
     run_podman wait $random_name
     # Container did not start successfully -> exit code != 0
     run_podman 125 start $random_name
     # FIXME(#14873): while older Podmans return 0 on wait, Docker does not.
     run_podman wait $random_name
+}
+
+@test "podman kill - no restart" {
+    ctr=$(random_string 10)
+    run_podman run -d --restart=always --name=$ctr $IMAGE \
+        sh -c "trap 'exit 42' SIGTERM; echo READY; while :; do sleep 0.2; done"
+    run_podman container inspect  --format "{{.State.Status}}" $ctr
+    is "$output" "running" "make sure container is running"
+    # Send SIGTERM and make sure the container exits.
+    run_podman kill -s=TERM $ctr
+    run_podman wait $ctr
+    is "$output" "42" "container exits with 42 on receiving SIGTERM"
+    run_podman container inspect  --format "{{.State.StoppedByUser}}" $ctr
+    is "$output" "true" "container is marked to be stopped by a user"
 }
 
 # vim: filetype=sh

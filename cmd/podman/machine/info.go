@@ -1,5 +1,4 @@
 //go:build amd64 || arm64
-// +build amd64 arm64
 
 package machine
 
@@ -9,16 +8,17 @@ import (
 	"runtime"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/common/pkg/config"
 	"github.com/containers/common/pkg/report"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/machine"
-	"github.com/ghodss/yaml"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/machine"
+	machineDefine "github.com/containers/podman/v5/pkg/machine/define"
+	"github.com/containers/podman/v5/pkg/machine/vmconfigs"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v2"
 )
 
 var infoDescription = `Display information pertaining to the machine host.`
@@ -28,7 +28,7 @@ var (
 		Use:               "info [options]",
 		Short:             "Display machine host info",
 		Long:              infoDescription,
-		PersistentPreRunE: rootlessOnly,
+		PersistentPreRunE: machinePreRunE,
 		RunE:              info,
 		Args:              validate.NoArgs,
 		ValidArgsFunction: completion.AutocompleteNone,
@@ -91,7 +91,6 @@ func info(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println(string(b))
 	}
-
 	return nil
 }
 
@@ -101,29 +100,38 @@ func hostInfo() (*entities.MachineHostInfo, error) {
 	host.Arch = runtime.GOARCH
 	host.OS = runtime.GOOS
 
-	provider := GetSystemDefaultProvider()
-	var listOpts machine.ListOptions
-	listResponse, err := provider.List(listOpts)
+	dirs, err := machine.GetMachineDirs(provider.VMType())
+	if err != nil {
+		return nil, err
+	}
+	mcs, err := vmconfigs.LoadMachinesInDir(dirs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get machines %w", err)
 	}
 
-	host.NumberOfMachines = len(listResponse)
+	host.NumberOfMachines = len(mcs)
 
-	cfg, err := config.ReadCustomConfig()
-	if err != nil {
-		return nil, err
+	defaultCon := ""
+	con, err := registry.PodmanConfig().ContainersConfDefaultsRO.GetConnection("", true)
+	if err == nil {
+		// ignore the error here we only want to know if we have a default connection to show it in list
+		defaultCon = con.Name
 	}
 
 	// Default state of machine is stopped
 	host.MachineState = "Stopped"
-	for _, vm := range listResponse {
+	for _, vm := range mcs {
 		// Set default machine if found
-		if vm.Name == cfg.Engine.ActiveService {
+		if vm.Name == defaultCon {
 			host.DefaultMachine = vm.Name
 		}
 		// If machine is running or starting, it is automatically the current machine
-		if vm.Running {
+		state, err := provider.State(vm, false)
+		if err != nil {
+			return nil, err
+		}
+
+		if state == machineDefine.Running {
 			host.CurrentMachine = vm.Name
 			host.MachineState = "Running"
 		} else if vm.Starting {
@@ -141,19 +149,10 @@ func hostInfo() (*entities.MachineHostInfo, error) {
 		}
 	}
 
-	host.VMType = provider.VMType()
+	host.VMType = provider.VMType().String()
 
-	dataDir, err := machine.GetDataDir(host.VMType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get machine image dir")
-	}
-	host.MachineImageDir = dataDir
-
-	confDir, err := machine.GetConfDir(host.VMType)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get machine config dir %w", err)
-	}
-	host.MachineConfigDir = confDir
+	host.MachineImageDir = dirs.DataDir.GetPath()
+	host.MachineConfigDir = dirs.ConfigDir.GetPath()
 
 	eventsDir, err := eventSockDir()
 	if err != nil {

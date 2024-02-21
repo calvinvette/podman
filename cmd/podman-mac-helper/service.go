@@ -1,5 +1,4 @@
 //go:build darwin
-// +build darwin
 
 package main
 
@@ -21,8 +20,8 @@ const (
 
 var serviceCmd = &cobra.Command{
 	Use:    "service",
-	Short:  "services requests",
-	Long:   "services requests",
+	Short:  "Service requests",
+	Long:   "Service requests",
 	PreRun: silentUsage,
 	Run:    serviceRun,
 	Hidden: true,

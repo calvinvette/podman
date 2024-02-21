@@ -1,9 +1,11 @@
+//go:build !remote
+
 package libpod
 
 import (
 	"fmt"
 
-	"github.com/containers/podman/v4/libpod/define"
+	"github.com/containers/podman/v5/libpod/define"
 	pluginapi "github.com/docker/go-plugins-helpers/volume"
 	"github.com/sirupsen/logrus"
 )
@@ -65,6 +67,7 @@ func (v *Volume) Inspect() (*define.InspectVolumeData, error) {
 	data.NeedsCopyUp = v.state.NeedsCopyUp
 	data.NeedsChown = v.state.NeedsChown
 	data.StorageID = v.config.StorageID
+	data.LockNumber = v.lock.ID()
 
 	if v.config.Timeout != nil {
 		data.Timeout = *v.config.Timeout

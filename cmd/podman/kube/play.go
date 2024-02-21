@@ -8,19 +8,24 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
+	buildahParse "github.com/containers/buildah/pkg/parse"
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/parse"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
-	"github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/parse"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/shutdown"
+	"github.com/containers/podman/v5/pkg/annotations"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
+	"github.com/containers/podman/v5/pkg/util"
 	"github.com/spf13/cobra"
 )
 
@@ -43,11 +48,11 @@ var (
 	playOptions        = playKubeOptionsWrapper{}
 	playDescription    = `Reads in a structured file of Kubernetes YAML.
 
-  Creates pods or volumes based on the Kubernetes kind described in the YAML. Supported kinds are Pods, Deployments and PersistentVolumeClaims.`
+  Creates pods or volumes based on the Kubernetes kind described in the YAML. Supported kinds are Pods, Deployments, DaemonSets and PersistentVolumeClaims.`
 
 	playCmd = &cobra.Command{
 		Use:               "play [options] KUBEFILE|-",
-		Short:             "Play a pod or volume based on Kubernetes YAML.",
+		Short:             "Play a pod or volume based on Kubernetes YAML",
 		Long:              playDescription,
 		RunE:              play,
 		Args:              cobra.ExactArgs(1),
@@ -62,7 +67,7 @@ var (
 var (
 	playKubeCmd = &cobra.Command{
 		Use:               "kube [options] KUBEFILE|-",
-		Short:             "Play a pod or volume based on Kubernetes YAML.",
+		Short:             "Play a pod or volume based on Kubernetes YAML",
 		Long:              playDescription,
 		Hidden:            true,
 		RunE:              playKube,
@@ -95,7 +100,7 @@ func playFlags(cmd *cobra.Command) {
 	flags.SetNormalizeFunc(utils.AliasFlags)
 
 	annotationFlagName := "annotation"
-	flags.StringSliceVar(
+	flags.StringArrayVar(
 		&playOptions.annotations,
 		annotationFlagName, []string{},
 		"Add annotations to pods (key=value)",
@@ -121,7 +126,7 @@ func playFlags(cmd *cobra.Command) {
 	_ = cmd.RegisterFlagCompletionFunc(logDriverFlagName, common.AutocompleteLogDriver)
 
 	logOptFlagName := "log-opt"
-	flags.StringSliceVar(
+	flags.StringArrayVar(
 		&playOptions.LogOptions,
 		logOptFlagName, []string{},
 		"Logging driver options",
@@ -151,6 +156,24 @@ func playFlags(cmd *cobra.Command) {
 	replaceFlagName := "replace"
 	flags.BoolVar(&playOptions.Replace, replaceFlagName, false, "Delete and recreate pods defined in the YAML file")
 
+	publishPortsFlagName := "publish"
+	flags.StringSliceVar(&playOptions.PublishPorts, publishPortsFlagName, []string{}, "Publish a container's port, or a range of ports, to the host")
+	_ = cmd.RegisterFlagCompletionFunc(publishPortsFlagName, completion.AutocompleteNone)
+
+	publishAllPortsFlagName := "publish-all"
+	flags.BoolVar(&playOptions.PublishAllPorts, publishAllPortsFlagName, false, "Whether to publish all ports defined in the K8S YAML file (containerPort, hostPort), if false only hostPort will be published")
+
+	waitFlagName := "wait"
+	flags.BoolVarP(&playOptions.Wait, waitFlagName, "w", false, "Clean up all objects created when a SIGTERM is received or pods exit")
+
+	configmapFlagName := "configmap"
+	flags.StringArrayVar(&playOptions.ConfigMaps, configmapFlagName, []string{}, "`Pathname` of a YAML file containing a kubernetes configmap")
+	_ = cmd.RegisterFlagCompletionFunc(configmapFlagName, completion.AutocompleteDefault)
+
+	noTruncFlagName := "no-trunc"
+	flags.BoolVar(&playOptions.UseLongAnnotations, noTruncFlagName, false, "Use annotations that are not truncated to the Kubernetes maximum length of 63 characters")
+	_ = flags.MarkHidden(noTruncFlagName)
+
 	if !registry.IsRemote() {
 		certDirFlagName := "cert-dir"
 		flags.StringVar(&playOptions.CertDir, certDirFlagName, "", "`Pathname` of a directory containing TLS certificates and keys")
@@ -160,10 +183,6 @@ func playFlags(cmd *cobra.Command) {
 		flags.StringVar(&playOptions.SeccompProfileRoot, seccompProfileRootFlagName, defaultSeccompRoot, "Directory path for seccomp profiles")
 		_ = cmd.RegisterFlagCompletionFunc(seccompProfileRootFlagName, completion.AutocompleteDefault)
 
-		configmapFlagName := "configmap"
-		flags.StringSliceVar(&playOptions.ConfigMaps, configmapFlagName, []string{}, "`Pathname` of a YAML file containing a kubernetes configmap")
-		_ = cmd.RegisterFlagCompletionFunc(configmapFlagName, completion.AutocompleteDefault)
-
 		buildFlagName := "build"
 		flags.BoolVar(&playOptions.BuildCLI, buildFlagName, false, "Build all images in a YAML (given Containerfiles exist)")
 
@@ -171,18 +190,19 @@ func playFlags(cmd *cobra.Command) {
 		flags.StringVar(&playOptions.ContextDir, contextDirFlagName, "", "Path to top level of context directory")
 		_ = cmd.RegisterFlagCompletionFunc(contextDirFlagName, completion.AutocompleteDefault)
 
-		// NOTE: The service-container flag is marked as hidden as it
-		// is purely designed for running kube-play or play-kube in systemd units.
-		// It is not something users should need to know or care about.
-		//
-		// Having a flag rather than an env variable is cleaner.
-		serviceFlagName := "service-container"
-		flags.BoolVar(&playOptions.ServiceContainer, serviceFlagName, false, "Starts a service container before all pods")
-		_ = flags.MarkHidden("service-container")
-
 		flags.StringVar(&playOptions.SignaturePolicy, "signature-policy", "", "`Pathname` of signature policy file (not usually used)")
 
 		_ = flags.MarkHidden("signature-policy")
+
+		// Below flags are local-only and hidden since they are used in
+		// kube-play's systemd integration only and hence hidden from
+		// users.
+		serviceFlagName := "service-container"
+		flags.BoolVar(&playOptions.ServiceContainer, serviceFlagName, false, "Starts a service container before all pods")
+		_ = flags.MarkHidden(serviceFlagName)
+		exitFlagName := "service-exit-code-propagation"
+		flags.StringVar(&playOptions.ExitCodePropagation, exitFlagName, "", "Exit-code propagation of the service container")
+		_ = flags.MarkHidden(exitFlagName)
 	}
 }
 
@@ -202,9 +222,16 @@ func play(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("build") {
 		playOptions.Build = types.NewOptionalBool(playOptions.BuildCLI)
+		if playOptions.Build == types.OptionalBoolTrue {
+			systemContext, err := buildahParse.SystemContextFromOptions(cmd)
+			if err != nil {
+				return err
+			}
+			playOptions.SystemContext = systemContext
+		}
 	}
-	if playOptions.Authfile != "" {
-		if _, err := os.Stat(playOptions.Authfile); err != nil {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(playOptions.Authfile); err != nil {
 			return err
 		}
 	}
@@ -221,18 +248,18 @@ func play(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, annotation := range playOptions.annotations {
-		splitN := strings.SplitN(annotation, "=", 2)
-		if len(splitN) > 2 {
+		key, val, hasVal := strings.Cut(annotation, "=")
+		if !hasVal {
 			return fmt.Errorf("annotation %q must include an '=' sign", annotation)
 		}
 		if playOptions.Annotations == nil {
 			playOptions.Annotations = make(map[string]string)
 		}
-		annotation := splitN[1]
-		if len(annotation) > define.MaxKubeAnnotation {
-			return fmt.Errorf("annotation exceeds maximum size, %d, of kubernetes annotation: %s", define.MaxKubeAnnotation, annotation)
-		}
-		playOptions.Annotations[splitN[0]] = annotation
+		playOptions.Annotations[key] = val
+	}
+
+	if err := annotations.ValidateAnnotations(playOptions.Annotations); err != nil {
+		return err
 	}
 
 	for _, mac := range playOptions.macs {
@@ -247,26 +274,17 @@ func play(cmd *cobra.Command, args []string) error {
 		return errors.New("--force may be specified only with --down")
 	}
 
-	// When running under Systemd use passthrough as the default log-driver.
-	// When doing so, the journal socket is passed to the containers as-is which has two advantages:
-	// 1. journald can see who the actual sender of the log event is,
-	//    rather than thinking everything comes from the conmon process
-	// 2. conmon will not have to copy all the log data
-	if !cmd.Flags().Changed(logDriverFlagName) && playOptions.ServiceContainer {
-		playOptions.LogDriver = define.PassthroughLogging
-	}
-
 	reader, err := readerFromArg(args[0])
 	if err != nil {
 		return err
 	}
 
 	if playOptions.Down {
-		return teardown(reader, entities.PlayKubeDownOptions{Force: playOptions.Force}, false)
+		return teardown(reader, entities.PlayKubeDownOptions{Force: playOptions.Force})
 	}
 
 	if playOptions.Replace {
-		if err := teardown(reader, entities.PlayKubeDownOptions{Force: playOptions.Force}, false); err != nil && !errorhandling.Contains(err, define.ErrNoSuchPod) {
+		if err := teardown(reader, entities.PlayKubeDownOptions{Force: playOptions.Force}); err != nil && !errorhandling.Contains(err, define.ErrNoSuchPod) {
 			return err
 		}
 		if _, err := reader.Seek(0, 0); err != nil {
@@ -274,16 +292,67 @@ func play(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := kubeplay(reader); err != nil {
-		// teardown any containers, pods, and volumes that might have created before we hit the error
-		teardownReader, trErr := readerFromArg(args[0])
-		if trErr != nil {
-			return trErr
+	// Create a channel to catch an interrupt or SIGTERM signal
+	ch := make(chan os.Signal, 1)
+	var teardownReader *bytes.Reader
+	if playOptions.Wait {
+		// Stop the shutdown signal handler so we can actually clean up after a SIGTERM or interrupt
+		if err := shutdown.Stop(); err != nil && err != shutdown.ErrNotStarted {
+			return err
 		}
-		if tErr := teardown(teardownReader, entities.PlayKubeDownOptions{Force: true}, true); tErr != nil && !errorhandling.Contains(tErr, define.ErrNoSuchPod) {
-			return fmt.Errorf("error tearing down workloads %q after kube play error %q", tErr, err)
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+		playOptions.ServiceContainer = true
+
+		// Read the kube yaml file again so that a reader can be passed down to the teardown function
+		teardownReader, err = readerFromArg(args[0])
+		if err != nil {
+			return err
 		}
-		return err
+		fmt.Println("Use ctrl+c to clean up or wait for pods to exit")
+	}
+
+	var teardownErr error
+	cancelled := false
+	if playOptions.Wait {
+		// use a goroutine to wait for a sigterm or interrupt
+		go func() {
+			<-ch
+			// clean up any volumes that were created as well
+			fmt.Println("\nCleaning up containers, pods, and volumes...")
+			cancelled = true
+			if err := teardown(teardownReader, entities.PlayKubeDownOptions{Force: true}); err != nil && !errorhandling.Contains(err, define.ErrNoSuchPod) {
+				teardownErr = fmt.Errorf("error during cleanup: %v", err)
+			}
+		}()
+	}
+
+	if playErr := kubeplay(reader); playErr != nil {
+		// FIXME: The cleanup logic below must be fixed to only remove
+		// resources that were created before a failure.  Otherwise,
+		// rerunning the same YAML file will cause an error and remove
+		// the previously created workload.
+		//
+		// teardown any containers, pods, and volumes that might have been created before we hit the error
+		// reader, err := readerFromArg(args[0])
+		// if err != nil {
+		// 	return err
+		// }
+		// if err := teardown(reader, entities.PlayKubeDownOptions{Force: true}, true); err != nil && !errorhandling.Contains(err, define.ErrNoSuchPod) {
+		// 	return fmt.Errorf("error tearing down workloads %q after kube play error %q", err, playErr)
+		// }
+		return playErr
+	}
+	if teardownErr != nil {
+		return teardownErr
+	}
+
+	// cleanup if --wait=true and the pods have exited
+	if playOptions.Wait && !cancelled {
+		fmt.Println("Cleaning up containers, pods, and volumes...")
+		// clean up any volumes that were created as well
+		if err := teardown(teardownReader, entities.PlayKubeDownOptions{Force: true}); err != nil && !errorhandling.Contains(err, define.ErrNoSuchPod) {
+			return err
+		}
 	}
 
 	return nil
@@ -294,45 +363,38 @@ func playKube(cmd *cobra.Command, args []string) error {
 }
 
 func readerFromArg(fileName string) (*bytes.Reader, error) {
-	errURL := parse.ValidURL(fileName)
-	if fileName == "-" { // Read from stdin
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return nil, err
-		}
-		return bytes.NewReader(data), nil
-	}
-	if errURL == nil {
+	var reader io.Reader
+	switch {
+	case fileName == "-": // Read from stdin
+		reader = os.Stdin
+	case parse.ValidURL(fileName) == nil:
 		response, err := http.Get(fileName)
 		if err != nil {
 			return nil, err
 		}
 		defer response.Body.Close()
-
-		data, err := io.ReadAll(response.Body)
+		reader = response.Body
+	default:
+		f, err := os.Open(fileName)
 		if err != nil {
 			return nil, err
 		}
-		return bytes.NewReader(data), nil
+		defer f.Close()
+		reader = f
 	}
-	f, err := os.Open(fileName)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
 	return bytes.NewReader(data), nil
 }
 
-func teardown(body io.Reader, options entities.PlayKubeDownOptions, quiet bool) error {
+func teardown(body io.Reader, options entities.PlayKubeDownOptions) error {
 	var (
 		podStopErrors utils.OutputErrors
 		podRmErrors   utils.OutputErrors
 		volRmErrors   utils.OutputErrors
+		secRmErrors   utils.OutputErrors
 	)
 	reports, err := registry.ContainerEngine().PlayKubeDown(registry.GetContext(), body, options)
 	if err != nil {
@@ -340,14 +402,11 @@ func teardown(body io.Reader, options entities.PlayKubeDownOptions, quiet bool) 
 	}
 
 	// Output stopped pods
-	if !quiet {
-		fmt.Println("Pods stopped:")
-	}
+	fmt.Println("Pods stopped:")
 	for _, stopped := range reports.StopReport {
 		switch {
 		case len(stopped.Errs) > 0:
 			podStopErrors = append(podStopErrors, stopped.Errs...)
-		case quiet:
 		default:
 			fmt.Println(stopped.Id)
 		}
@@ -359,14 +418,11 @@ func teardown(body io.Reader, options entities.PlayKubeDownOptions, quiet bool) 
 	}
 
 	// Output rm'd pods
-	if !quiet {
-		fmt.Println("Pods removed:")
-	}
+	fmt.Println("Pods removed:")
 	for _, removed := range reports.RmReport {
 		switch {
 		case removed.Err != nil:
 			podRmErrors = append(podRmErrors, removed.Err)
-		case quiet:
 		default:
 			fmt.Println(removed.Id)
 		}
@@ -378,14 +434,26 @@ func teardown(body io.Reader, options entities.PlayKubeDownOptions, quiet bool) 
 	}
 
 	// Output rm'd volumes
-	if !quiet {
-		fmt.Println("Volumes removed:")
+	fmt.Println("Secrets removed:")
+	for _, removed := range reports.SecretRmReport {
+		switch {
+		case removed.Err != nil:
+			secRmErrors = append(secRmErrors, removed.Err)
+		default:
+			fmt.Println(removed.ID)
+		}
 	}
+	lastSecretRmError := secRmErrors.PrintErrors()
+	if lastPodRmError != nil {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", lastSecretRmError)
+	}
+
+	// Output rm'd volumes
+	fmt.Println("Volumes removed:")
 	for _, removed := range reports.VolumeRmReport {
 		switch {
 		case removed.Err != nil:
 			volRmErrors = append(volRmErrors, removed.Err)
-		case quiet:
 		default:
 			fmt.Println(removed.Id)
 		}
@@ -399,12 +467,40 @@ func kubeplay(body io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if report.ExitCode != nil {
+		registry.SetExitCode(int(*report.ExitCode))
+	}
+	if err := printPlayReport(report); err != nil {
+		return err
+	}
+
+	// If --wait=true, we need wait for the service container to exit so that we know that the pod has exited and we can clean up
+	if playOptions.Wait {
+		_, err := registry.ContainerEngine().ContainerWait(registry.GetContext(), []string{report.ServiceContainerID}, entities.WaitOptions{})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// printPlayReport goes through the report returned by KubePlay and prints it out in a human
+// friendly format.
+func printPlayReport(report *entities.PlayKubeReport) error {
 	// Print volumes report
 	for i, volume := range report.Volumes {
 		if i == 0 {
 			fmt.Println("Volumes:")
 		}
 		fmt.Println(volume.Name)
+	}
+
+	// Print secrets report
+	for i, secret := range report.Secrets {
+		if i == 0 {
+			fmt.Println("Secrets:")
+		}
+		fmt.Println(secret.CreateReport.ID)
 	}
 
 	// Print pods report
@@ -446,6 +542,5 @@ func kubeplay(body io.Reader) error {
 	if ctrsFailed > 0 {
 		return fmt.Errorf("failed to start %d containers", ctrsFailed)
 	}
-
 	return nil
 }

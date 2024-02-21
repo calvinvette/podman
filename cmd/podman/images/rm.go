@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/errorhandling"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/errorhandling"
 	"github.com/containers/storage/types"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -19,7 +19,7 @@ var (
 	rmDescription = "Removes one or more previously pulled or locally created images."
 	rmCmd         = &cobra.Command{
 		Use:               "rm [options] IMAGE [IMAGE...]",
-		Short:             "Removes one or more images from local storage",
+		Short:             "Remove one or more images from local storage",
 		Long:              rmDescription,
 		RunE:              rm,
 		ValidArgsFunction: common.AutocompleteImages,

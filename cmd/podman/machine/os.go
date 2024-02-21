@@ -1,20 +1,18 @@
-//go:build (amd64 || arm64) && experimental
-// +build amd64 arm64
-// +build experimental
+//go:build amd64 || arm64
 
 package machine
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/validate"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/validate"
 	"github.com/spf13/cobra"
 )
 
 var (
 	OSCmd = &cobra.Command{
 		Use:               "os",
-		Short:             "Manage a virtual machine's os",
-		Long:              "Manage a virtual machine's operating system",
+		Short:             "Manage a Podman virtual machine's OS",
+		Long:              "Manage a Podman virtual machine's operating system",
 		PersistentPreRunE: validate.NoOp,
 		RunE:              validate.SubCommandExists,
 	}

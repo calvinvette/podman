@@ -1,3 +1,5 @@
+//go:build !remote
+
 package generate
 
 import (
@@ -12,12 +14,12 @@ import (
 
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	ann "github.com/containers/podman/v4/pkg/annotations"
-	envLib "github.com/containers/podman/v4/pkg/env"
-	"github.com/containers/podman/v4/pkg/signal"
-	"github.com/containers/podman/v4/pkg/specgen"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	ann "github.com/containers/podman/v5/pkg/annotations"
+	envLib "github.com/containers/podman/v5/pkg/env"
+	"github.com/containers/podman/v5/pkg/signal"
+	"github.com/containers/podman/v5/pkg/specgen"
 	"github.com/openshift/imagebuilder"
 	"github.com/sirupsen/logrus"
 )
@@ -68,11 +70,6 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 		return nil, err
 	}
 	if inspectData != nil {
-		inspectData, err = newImage.Inspect(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-
 		if s.HealthConfig == nil {
 			// NOTE: the health check is only set for Docker images
 			// but inspect will take care of it.
@@ -113,7 +110,15 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	}
 
 	// Get Default Environment from containers.conf
-	defaultEnvs, err := envLib.ParseSlice(rtc.GetDefaultEnvEx(s.EnvHost, s.HTTPProxy))
+	envHost := false
+	if s.EnvHost != nil {
+		envHost = *s.EnvHost
+	}
+	httpProxy := false
+	if s.HTTPProxy != nil {
+		httpProxy = *s.HTTPProxy
+	}
+	defaultEnvs, err := envLib.ParseSlice(rtc.GetDefaultEnvEx(envHost, httpProxy))
 	if err != nil {
 		return nil, fmt.Errorf("parsing fields in containers.conf: %w", err)
 	}
@@ -130,22 +135,34 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 		defaultEnvs = envLib.Join(envLib.DefaultEnvVariables(), envLib.Join(defaultEnvs, envs))
 	}
 
+	// add default terminal to env if tty flag is set
+	_, ok := defaultEnvs["TERM"]
+	if (s.Terminal != nil && *s.Terminal) && !ok {
+		defaultEnvs["TERM"] = "xterm"
+	}
+
 	for _, e := range s.EnvMerge {
 		processedWord, err := imagebuilder.ProcessWord(e, envLib.Slice(defaultEnvs))
 		if err != nil {
 			return nil, fmt.Errorf("unable to process variables for --env-merge %s: %w", e, err)
 		}
-		splitWord := strings.Split(processedWord, "=")
-		if _, ok := defaultEnvs[splitWord[0]]; ok {
-			defaultEnvs[splitWord[0]] = splitWord[1]
+
+		key, val, found := strings.Cut(processedWord, "=")
+		if !found {
+			return nil, fmt.Errorf("missing `=` for --env-merge substitution %s", e)
 		}
+
+		// the env var passed via --env-merge
+		// need not be defined in the image
+		// continue with an empty string
+		defaultEnvs[key] = val
 	}
 
 	for _, e := range s.UnsetEnv {
 		delete(defaultEnvs, e)
 	}
 
-	if s.UnsetEnvAll {
+	if s.UnsetEnvAll != nil && *s.UnsetEnvAll {
 		defaultEnvs = make(map[string]string)
 	}
 	// First transform the os env into a map. We need it for the labels later in
@@ -153,9 +170,9 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	osEnv := envLib.Map(os.Environ())
 
 	// Caller Specified defaults
-	if s.EnvHost {
+	if envHost {
 		defaultEnvs = envLib.Join(defaultEnvs, osEnv)
-	} else if s.HTTPProxy {
+	} else if httpProxy {
 		for _, envSpec := range config.ProxyEnv {
 			if v, ok := osEnv[envSpec]; ok {
 				defaultEnvs[envSpec] = v
@@ -166,14 +183,13 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	s.Env = envLib.Join(defaultEnvs, s.Env)
 
 	// Labels and Annotations
-	annotations := make(map[string]string)
 	if newImage != nil {
 		labels, err := newImage.Labels(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		// labels from the image that don't exist already
+		// labels from the image that don't already exist
 		if len(labels) > 0 && s.Labels == nil {
 			s.Labels = make(map[string]string)
 		}
@@ -183,12 +199,8 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 			}
 		}
 
-		// Add annotations from the image
-		for k, v := range inspectData.Annotations {
-			if !define.IsReservedAnnotation(k) {
-				annotations[k] = v
-			}
-		}
+		// Do NOT include image annotations - these can have security
+		// implications, we don't want untrusted images setting them.
 	}
 
 	// in the event this container is in a pod, and the pod has an infra container
@@ -199,6 +211,7 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 	//   VM, which is the default behavior
 	// - "container" denotes the container should join the VM of the SandboxID
 	//   (the infra container)
+	annotations := make(map[string]string)
 	if len(s.Pod) > 0 {
 		p, err := r.LookupPod(s.Pod)
 		if err != nil {
@@ -213,7 +226,6 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 			sandboxID = infra.ID()
 		}
 		annotations[ann.SandboxID] = sandboxID
-		annotations[ann.ContainerType] = ann.ContainerTypeContainer
 		// Check if this is an init-ctr and if so, check if
 		// the pod is running.  we do not want to add init-ctrs to
 		// a running pod because it creates confusion for us.
@@ -232,13 +244,8 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 		}
 	}
 
-	for _, v := range rtc.Containers.Annotations {
-		split := strings.SplitN(v, "=", 2)
-		k := split[0]
-		v := ""
-		if len(split) == 2 {
-			v = split[1]
-		}
+	for _, annotation := range rtc.Containers.Annotations.Get() {
+		k, v, _ := strings.Cut(annotation, "=")
 		annotations[k] = v
 	}
 	// now pass in the values from client
@@ -304,12 +311,16 @@ func CompleteSpec(ctx context.Context, r *libpod.Runtime, s *specgen.SpecGenerat
 		warnings = append(warnings, "Port mappings have been discarded as one of the Host, Container, Pod, and None network modes are in use")
 	}
 
+	if len(s.ImageVolumeMode) == 0 {
+		s.ImageVolumeMode = rtc.Engine.ImageVolumeMode
+	}
+
 	return warnings, nil
 }
 
 // ConfigToSpec takes a completed container config and converts it back into a specgenerator for purposes of cloning an existing container
-func ConfigToSpec(rt *libpod.Runtime, specg *specgen.SpecGenerator, contaierID string) (*libpod.Container, *libpod.InfraInherit, error) {
-	c, err := rt.LookupContainer(contaierID)
+func ConfigToSpec(rt *libpod.Runtime, specg *specgen.SpecGenerator, containerID string) (*libpod.Container, *libpod.InfraInherit, error) {
+	c, err := rt.LookupContainer(containerID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -352,9 +363,9 @@ func ConfigToSpec(rt *libpod.Runtime, specg *specgen.SpecGenerator, contaierID s
 		if conf.Spec.Process != nil && conf.Spec.Process.Env != nil {
 			env := make(map[string]string)
 			for _, entry := range conf.Spec.Process.Env {
-				split := strings.SplitN(entry, "=", 2)
-				if len(split) == 2 {
-					env[split[0]] = split[1]
+				key, val, hasVal := strings.Cut(entry, "=")
+				if hasVal {
+					env[key] = val
 				}
 			}
 			specg.Env = env
@@ -479,6 +490,7 @@ func ConfigToSpec(rt *libpod.Runtime, specg *specgen.SpecGenerator, contaierID s
 	specg.HostDeviceList = conf.DeviceHostSrc
 	specg.Networks = conf.Networks
 	specg.ShmSize = &conf.ShmSize
+	specg.ShmSizeSystemd = &conf.ShmSizeSystemd
 
 	mapSecurityConfig(conf, specg)
 
@@ -497,7 +509,7 @@ func ConfigToSpec(rt *libpod.Runtime, specg *specgen.SpecGenerator, contaierID s
 
 // mapSecurityConfig takes a libpod.ContainerSecurityConfig and converts it to a specgen.ContinerSecurityConfig
 func mapSecurityConfig(c *libpod.ContainerConfig, s *specgen.SpecGenerator) {
-	s.Privileged = c.Privileged
+	s.Privileged = &c.Privileged
 	s.SelinuxOpts = append(s.SelinuxOpts, c.LabelOpts...)
 	s.User = c.User
 	s.Groups = c.Groups

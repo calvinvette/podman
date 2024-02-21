@@ -8,13 +8,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func determineFedoraArch() string {
+func DetermineMachineArch() string {
 	const fallbackMsg = "this may result in the wrong Linux arch under emulation"
 	var machine, native uint16
 	current, _ := syscall.GetCurrentProcess()
 
 	if err := windows.IsWow64Process2(windows.Handle(current), &machine, &native); err != nil {
-		logrus.Warnf("Failure detecting native system architecture, %s: %w", fallbackMsg, err)
+		logrus.Warnf("Failure detecting native system architecture, %s: %v", fallbackMsg, err)
 		// Fall-back to binary arch
 		return runtime.GOARCH
 	}
@@ -26,7 +26,7 @@ func determineFedoraArch() string {
 	case 0x8664:
 		return "amd64"
 	default:
-		logrus.Warnf("Unknown or unsupported native system architecture [%d], %s", fallbackMsg)
+		logrus.Warnf("Unknown or unsupported native system architecture [%d], %s", native, fallbackMsg)
 		return runtime.GOARCH
 	}
 }

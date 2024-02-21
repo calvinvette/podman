@@ -1,5 +1,4 @@
 //go:build linux || aix || android || darwin || dragonfly || freebsd || hurd || illumos || ios || netbsd || openbsd || solaris
-// +build linux aix android darwin dragonfly freebsd hurd illumos ios netbsd openbsd solaris
 
 package machine
 
@@ -7,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/containers/podman/v4/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/rootless"
 	"github.com/spf13/cobra"
 )
 

@@ -2,31 +2,10 @@ package util
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
-
-	"github.com/containers/podman/v4/pkg/timetype"
 )
-
-// ComputeUntilTimestamp extracts until timestamp from filters
-func ComputeUntilTimestamp(filterValues []string) (time.Time, error) {
-	invalid := time.Time{}
-	if len(filterValues) != 1 {
-		return invalid, errors.New("specify exactly one timestamp for until")
-	}
-	ts, err := timetype.GetTimestamp(filterValues[0], time.Now())
-	if err != nil {
-		return invalid, err
-	}
-	seconds, nanoseconds, err := timetype.ParseTimestamps(ts, 0)
-	if err != nil {
-		return invalid, err
-	}
-	return time.Unix(seconds, nanoseconds), nil
-}
 
 // filtersFromRequests extracts the "filters" parameter from the specified
 // http.Request.  The parameter can either be a `map[string][]string` as done
@@ -86,9 +65,9 @@ func PrepareFilters(r *http.Request) (*map[string][]string, error) {
 	}
 	filterMap := map[string][]string{}
 	for _, filter := range filtersList {
-		split := strings.SplitN(filter, "=", 2)
-		if len(split) > 1 {
-			filterMap[split[0]] = append(filterMap[split[0]], split[1])
+		fname, filter, hasFilter := strings.Cut(filter, "=")
+		if hasFilter {
+			filterMap[fname] = append(filterMap[fname], filter)
 		}
 	}
 	return &filterMap, nil

@@ -3,14 +3,13 @@ package entities
 import (
 	"io"
 	"net/url"
-	"time"
 
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/manifest"
+	"github.com/containers/image/v5/signature/signer"
 	"github.com/containers/image/v5/types"
 	encconfig "github.com/containers/ocicrypt/config"
-	"github.com/containers/podman/v4/pkg/inspect"
-	"github.com/containers/podman/v4/pkg/trust"
+	entitiesTypes "github.com/containers/podman/v5/pkg/domain/entities/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -53,37 +52,7 @@ func (i *Image) Id() string { //nolint:revive,stylecheck
 }
 
 // swagger:model LibpodImageSummary
-type ImageSummary struct {
-	ID          string `json:"Id"`
-	ParentId    string //nolint:revive,stylecheck
-	RepoTags    []string
-	RepoDigests []string
-	Created     int64
-	Size        int64
-	SharedSize  int
-	VirtualSize int64
-	Labels      map[string]string
-	Containers  int
-	ReadOnly    bool `json:",omitempty"`
-	Dangling    bool `json:",omitempty"`
-
-	// Podman extensions
-	Names   []string `json:",omitempty"`
-	Digest  string   `json:",omitempty"`
-	History []string `json:",omitempty"`
-}
-
-func (i *ImageSummary) Id() string { //nolint:revive,stylecheck
-	return i.ID
-}
-
-func (i *ImageSummary) IsReadOnly() bool {
-	return i.ReadOnly
-}
-
-func (i *ImageSummary) IsDangling() bool {
-	return i.Dangling
-}
+type ImageSummary = entitiesTypes.ImageSummary
 
 // ImageRemoveOptions can be used to alter image removal.
 type ImageRemoveOptions struct {
@@ -101,30 +70,12 @@ type ImageRemoveOptions struct {
 
 // ImageRemoveReport is the response for removing one or more image(s) from storage
 // and images what was untagged vs actually removed.
-type ImageRemoveReport struct {
-	// Deleted images.
-	Deleted []string `json:",omitempty"`
-	// Untagged images. Can be longer than Deleted.
-	Untagged []string `json:",omitempty"`
-	// ExitCode describes the exit codes as described in the `podman rmi`
-	// man page.
-	ExitCode int
-}
+type ImageRemoveReport = entitiesTypes.ImageRemoveReport
 
 type ImageHistoryOptions struct{}
 
-type ImageHistoryLayer struct {
-	ID        string    `json:"id"`
-	Created   time.Time `json:"created,omitempty"`
-	CreatedBy string    `json:",omitempty"`
-	Tags      []string  `json:"tags,omitempty"`
-	Size      int64     `json:"size"`
-	Comment   string    `json:"comment,omitempty"`
-}
-
-type ImageHistoryReport struct {
-	Layers []ImageHistoryLayer
-}
+type ImageHistoryLayer = entitiesTypes.ImageHistoryLayer
+type ImageHistoryReport = entitiesTypes.ImageHistoryReport
 
 // ImagePullOptions are the arguments for pulling images.
 type ImagePullOptions struct {
@@ -151,6 +102,10 @@ type ImagePullOptions struct {
 	// Quiet can be specified to suppress pull progress when pulling.  Ignored
 	// for remote calls.
 	Quiet bool
+	// Retry number of times to retry pull in case of failure
+	Retry *uint
+	// RetryDelay between retries in case of pull failures
+	RetryDelay string
 	// SignaturePolicy to use when pulling.  Ignored for remote calls.
 	SignaturePolicy string
 	// SkipTLSVerify to skip HTTPS and certificate verification.
@@ -165,20 +120,11 @@ type ImagePullOptions struct {
 }
 
 // ImagePullReport is the response from pulling one or more images.
-type ImagePullReport struct {
-	// Stream used to provide output from c/image
-	Stream string `json:"stream,omitempty"`
-	// Error contains text of errors from c/image
-	Error string `json:"error,omitempty"`
-	// Images contains the ID's of the images pulled
-	Images []string `json:"images,omitempty"`
-	// ID contains image id (retained for backwards compatibility)
-	ID string `json:"id,omitempty"`
-}
+type ImagePullReport = entitiesTypes.ImagePullReport
 
 // ImagePushOptions are the arguments for pushing images.
 type ImagePushOptions struct {
-	// All indicates that all images referenced in an manifest list should be pushed
+	// All indicates that all images referenced in a manifest list should be pushed
 	All bool
 	// Authfile is the path to the authentication file. Ignored for remote
 	// calls.
@@ -194,9 +140,6 @@ type ImagePushOptions struct {
 	Username string
 	// Password for authenticating against the registry.
 	Password string
-	// DigestFile, after copying the image, write the digest of the resulting
-	// image to the file.  Ignored for remote calls.
-	DigestFile string
 	// Format is the Manifest type (oci, v2s1, or v2s2) to use when pushing an
 	// image. Default is manifest type of source, with fallbacks.
 	// Ignored for remote calls.
@@ -210,6 +153,10 @@ type ImagePushOptions struct {
 	RemoveSignatures bool
 	// SignaturePolicy to use when pulling.  Ignored for remote calls.
 	SignaturePolicy string
+	// Signers, if non-empty, asks for signatures to be added during the copy
+	// using the provided signers.
+	// Rejected for remote calls.
+	Signers []*signer.Signer
 	// SignBy adds a signature at the destination using the specified key.
 	// Ignored for remote calls.
 	SignBy string
@@ -229,6 +176,8 @@ type ImagePushOptions struct {
 	Progress chan types.ProgressProperties
 	// CompressionFormat is the format to use for the compression of the blobs
 	CompressionFormat string
+	// CompressionLevel is the level to use for the compression of the blobs
+	CompressionLevel *int
 	// Writer is used to display copy information including progress bars.
 	Writer io.Writer
 	// OciEncryptConfig when non-nil indicates that an image should be encrypted.
@@ -240,22 +189,40 @@ type ImagePushOptions struct {
 	// integers in the slice represent 0-indexed layer indices, with support for negative
 	// indexing. i.e. 0 is the first layer, -1 is the last (top-most) layer.
 	OciEncryptLayers *[]int
+	//  If necessary, add clones of existing instances with requested compression algorithms to manifest list
+	// Note: Following option is only valid for `manifest push`
+	AddCompression []string
+	// ForceCompressionFormat ensures that the compression algorithm set in
+	// CompressionFormat is used exclusively, and blobs of other compression
+	// algorithms are not reused.
+	ForceCompressionFormat bool
 }
 
 // ImagePushReport is the response from pushing an image.
-// Currently only used in the remote API.
 type ImagePushReport struct {
-	// Stream used to provide push progress
-	Stream string `json:"stream,omitempty"`
-	// Error contains text of errors from pushing
-	Error string `json:"error,omitempty"`
+	// The digest of the manifest of the pushed image.
+	ManifestDigest string
 }
+
+// ImagePushStream is the response from pushing an image. Only used in the
+// remote API.
+type ImagePushStream = entitiesTypes.ImagePushStream
 
 // ImageSearchOptions are the arguments for searching images.
 type ImageSearchOptions struct {
 	// Authfile is the path to the authentication file. Ignored for remote
 	// calls.
 	Authfile string
+	// CertDir is the path to certificate directories.  Ignored for remote
+	// calls.
+	CertDir string
+	// Username for authenticating against the registry.
+	Username string
+	// Password for authenticating against the registry.
+	Password string
+	// IdentityToken is used to authenticate the user and get
+	// an access token for the registry.
+	IdentityToken string
 	// Filters for the search results.
 	Filters []string
 	// Limit the number of results.
@@ -267,22 +234,7 @@ type ImageSearchOptions struct {
 }
 
 // ImageSearchReport is the response from searching images.
-type ImageSearchReport struct {
-	// Index is the image index (e.g., "docker.io" or "quay.io")
-	Index string
-	// Name is the canonical name of the image (e.g., "docker.io/library/alpine").
-	Name string
-	// Description of the image.
-	Description string
-	// Stars is the number of stars of the image.
-	Stars int
-	// Official indicates if it's an official image.
-	Official string
-	// Automated indicates if the image was created by an automated build.
-	Automated string
-	// Tag is the repository tag
-	Tag string
-}
+type ImageSearchReport = entitiesTypes.ImageSearchReport
 
 // Image List Options
 type ImageListOptions struct {
@@ -300,9 +252,7 @@ type ImageTagOptions struct{}
 type ImageUntagOptions struct{}
 
 // ImageInspectReport is the data when inspecting an image.
-type ImageInspectReport struct {
-	*inspect.ImageData
-}
+type ImageInspectReport = entitiesTypes.ImageInspectReport
 
 type ImageLoadOptions struct {
 	Input           string
@@ -310,9 +260,7 @@ type ImageLoadOptions struct {
 	SignaturePolicy string
 }
 
-type ImageLoadReport struct {
-	Names []string
-}
+type ImageLoadReport = entitiesTypes.ImageLoadReport
 
 type ImageImportOptions struct {
 	Architecture    string
@@ -327,9 +275,7 @@ type ImageImportOptions struct {
 	SourceIsURL     bool
 }
 
-type ImageImportReport struct {
-	Id string //nolint:revive,stylecheck
-}
+type ImageImportReport = entitiesTypes.ImageImportReport
 
 // ImageSaveOptions provide options for saving images.
 type ImageSaveOptions struct {
@@ -384,9 +330,7 @@ type ImageTreeOptions struct {
 }
 
 // ImageTreeReport provides results from ImageEngine.Tree()
-type ImageTreeReport struct {
-	Tree string // TODO: Refactor move presentation work out of server
-}
+type ImageTreeReport = entitiesTypes.ImageTreeReport
 
 // ShowTrustOptions are the cli options for showing trust
 type ShowTrustOptions struct {
@@ -397,12 +341,7 @@ type ShowTrustOptions struct {
 }
 
 // ShowTrustReport describes the results of show trust
-type ShowTrustReport struct {
-	Raw                     []byte
-	SystemRegistriesDirPath string
-	JSONOutput              []byte
-	Policies                []*trust.Policy
-}
+type ShowTrustReport = entitiesTypes.ShowTrustReport
 
 // SetTrustOptions describes the CLI options for setting trust
 type SetTrustOptions struct {
@@ -437,15 +376,15 @@ type ImageUnmountOptions struct {
 }
 
 // ImageMountReport describes the response from image mount
-type ImageMountReport struct {
-	Id           string //nolint:revive,stylecheck
-	Name         string
-	Repositories []string
-	Path         string
-}
+type ImageMountReport = entitiesTypes.ImageMountReport
 
 // ImageUnmountReport describes the response from umounting an image
-type ImageUnmountReport struct {
-	Err error
-	Id  string //nolint:revive,stylecheck
-}
+type ImageUnmountReport = entitiesTypes.ImageUnmountReport
+
+const (
+	LocalFarmImageBuilderName   = "(local)"
+	LocalFarmImageBuilderDriver = "local"
+)
+
+// FarmInspectReport describes the response from farm inspect
+type FarmInspectReport = entitiesTypes.FarmInspectReport

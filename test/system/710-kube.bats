@@ -8,12 +8,9 @@ load helpers
 # capability drop list
 capabilities='{"drop":["CAP_FOWNER","CAP_SETFCAP"]}'
 
-# Warning that is emitted once on containers, multiple times on pods
-kubernetes_63='Truncation Annotation: .* Kubernetes only allows 63 characters'
-
 # filter: convert yaml to json, because bash+yaml=madness
 function yaml2json() {
-    egrep -v "$kubernetes_63" | python3 -c 'import yaml
+    python3 -c 'import yaml
 import json
 import sys
 json.dump(yaml.safe_load(sys.stdin), sys.stdout)'
@@ -34,6 +31,8 @@ json.dump(yaml.safe_load(sys.stdin), sys.stdout)'
     run_podman container create --cap-drop fowner --cap-drop setfcap --name $cname $IMAGE top
     run_podman kube generate $cname
 
+    # As of #18542, we must never see this message again.
+    assert "$output" !~ "Kubernetes only allows 63 characters"
     # Convert yaml to json, and dump to stdout (to help in case of errors)
     json=$(yaml2json <<<"$output")
     jq . <<<"$json"
@@ -75,6 +74,22 @@ status                           | =  | null
     run_podman rm $cname
 }
 
+@test "podman kube generate unmasked" {
+      KUBE=$PODMAN_TMPDIR/kube.yaml
+      run_podman create --name test --security-opt unmask=all $IMAGE
+      run_podman inspect --format '{{ .HostConfig.SecurityOpt }}' test
+      is "$output" "[unmask=all]" "Inspect should see unmask all"
+      run_podman kube generate test -f $KUBE
+      assert "$(< $KUBE)" =~ "procMount: Unmasked" "Generated kube yaml should have procMount unmasked"
+      run_podman kube play $KUBE
+      run_podman inspect --format '{{ .HostConfig.SecurityOpt }}' test-pod-test
+      is "$output" "[unmask=all]" "Inspect kube play container should see unmask all"
+      run_podman kube down $KUBE
+      run_podman pod rm -a
+      run_podman rm -a
+      run_podman rmi $(pause_image)
+}
+
 @test "podman kube generate - pod" {
     local pname=p$(random_string 15)
     local cname1=c1$(random_string 15)
@@ -101,34 +116,69 @@ status                           | =  | null
 apiVersion | =  | v1
 kind       | =  | Pod
 
-metadata.annotations.\"io.kubernetes.cri-o.ContainerType/$cname1\" | =  | container
-metadata.annotations.\"io.kubernetes.cri-o.ContainerType/$cname2\" | =  | container
-metadata.annotations.\"io.kubernetes.cri-o.SandboxID/$cname1\"     | =~ | [0-9a-f]\\{56\\}
-metadata.annotations.\"io.kubernetes.cri-o.SandboxID/$cname2\"     | =~ | [0-9a-f]\\{56\\}
-
 metadata.creationTimestamp | =~ | [0-9T:-]\\+Z
 metadata.labels.app        | =  | ${pname}
 metadata.name              | =  | ${pname}
 
-spec.hostname                              | =  | $pname
-spec.restartPolicy                         | =  | Never
+spec.hostname                              | =  | null
 
 spec.containers[0].command                 | =  | [\"top\"]
 spec.containers[0].image                   | =  | $IMAGE
 spec.containers[0].name                    | =  | $cname1
 spec.containers[0].ports[0].containerPort  | =  | 8888
 spec.containers[0].ports[0].hostPort       | =  | 9999
-spec.containers[0].resources               | =  | {}
+spec.containers[0].resources               | =  | null
 
 spec.containers[1].command                 | =  | [\"bottom\"]
 spec.containers[1].image                   | =  | $IMAGE
 spec.containers[1].name                    | =  | $cname2
 spec.containers[1].ports                   | =  | null
-spec.containers[1].resources               | =  | {}
+spec.containers[1].resources               | =  | null
 
 spec.containers[0].securityContext.capabilities  | =  | $capabilities
 
-status  | =  | {}
+status  | =  | null
+"
+
+    while read key op expect; do
+        actual=$(jq -r -c ".$key" <<<"$json")
+        assert "$actual" $op "$expect" ".$key"
+    done < <(parse_table "$expect")
+
+    run_podman rm $cname1 $cname2
+    run_podman pod rm $pname
+    run_podman rmi $(pause_image)
+}
+
+@test "podman kube generate - deployment" {
+    skip_if_remote "containersconf needs to be set on server side"
+    local pname=p$(random_string 15)
+    local cname1=c1$(random_string 15)
+    local cname2=c2$(random_string 15)
+
+    run_podman pod create --name $pname
+    run_podman container create --name $cname1 --pod $pname $IMAGE top
+    run_podman container create --name $cname2 --pod $pname $IMAGE bottom
+
+    containersconf=$PODMAN_TMPDIR/containers.conf
+    cat >$containersconf <<EOF
+[engine]
+kube_generate_type="deployment"
+EOF
+    CONTAINERS_CONF_OVERRIDE=$containersconf run_podman kube generate $pname
+
+    json=$(yaml2json <<<"$output")
+    # For debugging purposes in the event we regress, we can see the generate output to know what went wrong
+    jq . <<<"$json"
+
+    # See container test above for description of this table
+    expect="
+apiVersion | =  | apps/v1
+kind       | =  | Deployment
+
+metadata.creationTimestamp | =~ | [0-9T:-]\\+Z
+metadata.labels.app        | =  | ${pname}
+metadata.name              | =  | ${pname}-deployment
 "
 
     while read key op expect; do

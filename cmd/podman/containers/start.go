@@ -6,12 +6,12 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -24,8 +24,7 @@ var (
 		RunE:              start,
 		Args:              validateStart,
 		ValidArgsFunction: common.AutocompleteContainersStartable,
-		Example: `podman start --latest
-  podman start 860a4b231279 5421ab43b45
+		Example: `podman start 860a4b231279 5421ab43b45
   podman start --interactive --attach imageID`,
 	}
 
@@ -36,8 +35,7 @@ var (
 		RunE:              startCommand.RunE,
 		Args:              startCommand.Args,
 		ValidArgsFunction: startCommand.ValidArgsFunction,
-		Example: `podman container start --latest
-  podman container start 860a4b231279 5421ab43b45
+		Example: `podman container start 860a4b231279 5421ab43b45
   podman container start --interactive --attach imageID`,
 	}
 )
@@ -61,7 +59,7 @@ func startFlags(cmd *cobra.Command) {
 	flags.BoolVar(&startOptions.SigProxy, "sig-proxy", false, "Proxy received signals to the process (default true if attaching, false otherwise)")
 
 	filterFlagName := "filter"
-	flags.StringSliceVarP(&filters, filterFlagName, "f", []string{}, "Filter output based on conditions given")
+	flags.StringArrayVarP(&filters, filterFlagName, "f", []string{}, "Filter output based on conditions given")
 	_ = cmd.RegisterFlagCompletionFunc(filterFlagName, common.AutocompletePsFilters)
 
 	flags.BoolVar(&startOptions.All, "all", false, "Start all containers regardless of their state or configuration")
@@ -124,13 +122,13 @@ func start(cmd *cobra.Command, args []string) error {
 		startOptions.Stdout = os.Stdout
 	}
 
-	containers := args
+	containers := utils.RemoveSlash(args)
 	for _, f := range filters {
-		split := strings.SplitN(f, "=", 2)
-		if len(split) < 2 {
+		fname, filter, hasFilter := strings.Cut(f, "=")
+		if !hasFilter {
 			return fmt.Errorf("invalid filter %q", f)
 		}
-		startOptions.Filters[split[0]] = append(startOptions.Filters[split[0]], split[1])
+		startOptions.Filters[fname] = append(startOptions.Filters[fname], filter)
 	}
 
 	responses, err := registry.ContainerEngine().ContainerStart(registry.GetContext(), containers, startOptions)

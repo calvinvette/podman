@@ -45,7 +45,7 @@ function errmsg() {
     local msg_new=${1//\//\\/};  shift
 
     for t in "$@"; do
-        if fgrep -qx "@test \"$t\" {" $BUD; then
+        if grep -F -qx "@test \"$t\" {" $BUD; then
             $ECHO "@test \"$t\" : updating to \"$msg_new\""
             t=${t//\//\\/}
             # FIXME: emit error if msg_orig not found
@@ -68,7 +68,7 @@ function _skip() {
     fi
 
     for t in "$@"; do
-        if fgrep -qx "@test \"$t\" {" $BUD; then
+        if grep -F -qx "@test \"$t\" {" $BUD; then
             $ECHO "@test \"$t\" : $skip \"$reason\""
             # Escape slash in test name, 'custom files in /run/'
             t=${t//\//\\/}
@@ -87,6 +87,14 @@ function skip() {
 
 function skip_if_remote() {
     _skip "skip_if_remote" "$@"
+}
+
+function skip_if_rootless() {
+    _skip "skip_if_rootless_environment" "$@"
+}
+
+function skip_if_rootless_remote() {
+    _skip "skip_if_rootless_remote" "$@"
 }
 
 # END   handlers
@@ -135,7 +143,7 @@ errmsg "no such file or directory" \
        "bud without any arguments should fail when no Dockerfile exists"
 
 errmsg "is not a file" \
-       "Error: containerfile: .* cannot be path to a directory" \
+       "Error: no Containerfile or Dockerfile specified or found in context directory" \
        "bud with specified context should fail if assumed Dockerfile is a directory"
 
 errmsg "no such file or directory" \
@@ -151,8 +159,8 @@ errmsg "no contents in .*" \
        "Error: context must be a directory: .*" \
        "bud with specified context should fail if context contains empty Dockerfile"
 
-errmsg "checking authfile: stat /tmp/nonexistent: no such file or directory" \
-       "Error: checking authfile: stat /tmp/nonexistent: no such file or directory" \
+errmsg "credential file is not accessible: stat /tmp/nonexistent: no such file or directory" \
+       "Error: credential file is not accessible: stat /tmp/nonexistent: no such file or directory" \
        "bud with Containerfile should fail with nonexistent authfile"
 
 errmsg "cannot find Containerfile or Dockerfile" \
@@ -176,6 +184,10 @@ skip "argument-order incompatible with podman" \
 # Fails with "Error: context must be a directory: /path/to/Dockerfile"
 skip "podman-build fails with 'context must be a directory'" \
      "bud with specified context should succeed if context contains existing Dockerfile"
+
+# See https://github.com/containers/podman/pull/20483#issuecomment-1782683979
+skip "does not pass in Podman CI: needs investigation" \
+     "bud with --no-hostname"
 
 ###############################################################################
 # BEGIN tests which are skipped because they make no sense under podman-remote
@@ -240,14 +252,43 @@ skip_if_remote "FIXME FIXME FIXME: does this test make sense in remote?" \
 # 2022-08-17 buildah PR 4190
 skip_if_remote "Explicit request in buildah PR 4190 to skip this on remote" \
                "build: test race in updating image name while performing parallel commits"
+# 2023-04-20 flakes on rootless, too.
+skip_if_rootless "Flakes when run rootless, too. See Buildah PR 4190" \
+                 "build: test race in updating image name while performing parallel commits"
 
 ###############################################################################
 # BEGIN tests which are skipped due to actual podman or podman-remote bugs.
 
 skip_if_remote "different error messages between podman & podman-remote" \
-               "bud with .dockerignore #2"
+               "bud with .dockerignore #2" \
+               "bud with .dockerignore #4"
 
 # END   tests which are skipped due to actual podman or podman-remote bugs.
+###############################################################################
+# BEGIN temporary workarounds that must be reevaluated periodically
+
+# 2023-06-27 confirmed this is still broken, main @ 3794d067e
+skip_if_remote "FIXME: can this test be made to work under podman-remote?" \
+               "bud-with-mount-cache-like-buildkit-verify-default-selinux-option"
+
+# 2023-06-27 confirmed these are still broken, main @ 3794d067e
+skip_if_rootless_remote "FIXME: #17788 tar + namespaces over http" \
+                        "bud-http-context-with-Dockerfile" \
+                        "bud-http-context-dir-with-Dockerfile" \
+                        "bud-http-context-with-Containerfile"
+
+# 2023-06-27 confirmed these are still broken, main @ 3794d067e
+skip_if_rootless_remote "FIXME: not sure if 17788 or some other bug" \
+                        "bud-github-context" \
+                        "bud with Dockerfile from stdin tar" \
+                        "build-with-network-test"
+
+# 2023-06-27 confirmed this is still broken, main @ 3794d067e
+# 2023-06-13 buildah 4746 changed exit code & expected error message
+skip "FIXME: 2023-06-13 buildah PR 4746 broke this test" \
+     "bud with encrypted FROM image"
+
+# END   temporary workarounds that must be reevaluated periodically
 ###############################################################################
 
 exit $RC

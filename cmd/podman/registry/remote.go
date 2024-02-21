@@ -2,10 +2,11 @@ package registry
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/spf13/cobra"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/pflag"
 )
 
@@ -15,9 +16,18 @@ var remoteFromCLI = struct {
 	sync  sync.Once
 }{}
 
+const PodmanSh = "podmansh"
+
 // IsRemote returns true if podman was built to run remote or --remote flag given on CLI
 // Use in init() functions as an initialization check
 func IsRemote() bool {
+	// remote conflicts with podmansh in how the `-c` option gets parsed
+	// This is noticeable if a user with shell set to podmansh were to execute
+	// a command using ssh like so:
+	// ssh user@host id
+	if strings.HasSuffix(filepath.Base(os.Args[0]), PodmanSh) {
+		return false
+	}
 	remoteFromCLI.sync.Do(func() {
 		remote := false
 		if _, ok := os.LookupEnv("CONTAINER_HOST"); ok {
@@ -39,14 +49,7 @@ func IsRemote() bool {
 		urlFlagName := "url"
 		fs.String(urlFlagName, "", "")
 
-		// The shell completion logic will call a command called "__complete" or "__completeNoDesc"
-		// This command will always be the second argument
-		// To still parse --remote correctly in this case we have to set args offset to two in this case
-		start := 1
-		if len(os.Args) > 1 && (os.Args[1] == cobra.ShellCompRequestCmd || os.Args[1] == cobra.ShellCompNoDescRequestCmd) {
-			start = 2
-		}
-		_ = fs.Parse(os.Args[start:])
+		_ = fs.Parse(os.Args[parseIndex():])
 		// --connection or --url implies --remote
 		remoteFromCLI.Value = remoteFromCLI.Value || fs.Changed(connectionFlagName) || fs.Changed(urlFlagName) || fs.Changed(hostFlagName) || fs.Changed(contextFlagName)
 	})

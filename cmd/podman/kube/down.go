@@ -1,10 +1,10 @@
 package kube
 
 import (
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +19,7 @@ var (
 
 	downCmd = &cobra.Command{
 		Use:               "down [options] KUBEFILE|-",
-		Short:             "Remove pods based on Kubernetes YAML.",
+		Short:             "Remove pods based on Kubernetes YAML",
 		Long:              downDescription,
 		RunE:              down,
 		Args:              cobra.ExactArgs(1),
@@ -52,5 +52,5 @@ func down(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	return teardown(reader, entities.PlayKubeDownOptions{Force: downOptions.Force}, false)
+	return teardown(reader, entities.PlayKubeDownOptions{Force: downOptions.Force})
 }

@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	securejoin "github.com/cyphar/filepath-securejoin"
-	"github.com/opencontainers/runc/libcontainer/user"
+	"github.com/moby/sys/user"
 	"github.com/sirupsen/logrus"
 )
 
@@ -22,7 +22,7 @@ type Overrides struct {
 }
 
 // GetUserGroupInfo takes string forms of the container's mount path and the container user and
-// returns a ExecUser with uid, gid, sgids, and home.  And override can be provided for defaults.
+// returns an ExecUser with uid, gid, sgids, and home.  And override can be provided for defaults.
 func GetUserGroupInfo(containerMount, containerUser string, override *Overrides) (*user.ExecUser, error) {
 	var (
 		passwdDest, groupDest string

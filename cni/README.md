@@ -1,5 +1,8 @@
 ## `cni` ##
 
+**Note**: The CNI backend is deprecated and will be removed in the next major Podman version 5.0, in preference
+of Netavark, see **[podman-network(1)](../docs/source/markdown/podman-network.1.md)** on how to change the backend.
+
 There are a wide variety of different [CNI](https://github.com/containernetworking/cni) network configurations. This
 directory just contains an example configuration that can be used as the
 basis for your own configuration.

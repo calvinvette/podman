@@ -1,18 +1,12 @@
+//go:build freebsd && amd64
+
 package qemu
 
 var (
 	QemuCommand = "qemu-system-x86_64"
 )
 
-func (v *MachineVM) addArchOptions() []string {
+func (v *QEMUStubber) addArchOptions(_ *setNewMachineCMDOpts) []string {
 	opts := []string{"-machine", "q35,accel=hvf:tcg", "-cpu", "host"}
 	return opts
-}
-
-func (v *MachineVM) prepare() error {
-	return nil
-}
-
-func (v *MachineVM) archRemovalFiles() []string {
-	return []string{}
 }

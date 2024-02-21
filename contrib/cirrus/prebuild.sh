@@ -16,7 +16,7 @@ set +a
 
 req_env_vars CI DEST_BRANCH IMAGE_SUFFIX TEST_FLAVOR TEST_ENVIRON \
              PODBIN_NAME PRIV_NAME DISTRO_NV AUTOMATION_LIB_PATH \
-             SCRIPT_BASE CIRRUS_WORKING_DIR FEDORA_NAME UBUNTU_NAME \
+             SCRIPT_BASE CIRRUS_WORKING_DIR FEDORA_NAME \
              VM_IMAGE_NAME
 
 # Defined by the CI system
@@ -28,9 +28,26 @@ msg "Checking Cirrus YAML"
 # shellcheck disable=SC2154
 showrun $SCRIPT_BASE/cirrus_yaml_test.py
 
-# Defined by CI config.
+msg "Checking for leading tabs in system tests"
+if grep -n ^$'\t' test/system/*; then
+    die "Found leading tabs in system tests. Use spaces to indent, not tabs."
+fi
+
+# Lookup 'env' dict. string value from key specified as argument from YAML file.
+get_env_key() {
+    local yaml
+    local script
+
+    yaml="$CIRRUS_WORKING_DIR/.github/workflows/scan-secrets.yml"
+    script="from yaml import safe_load; print(safe_load(open('$yaml'))['env']['$1'])"
+    python -c "$script"
+}
+
+# Only need to check CI-stuffs on a single build-task, there's only ever
+# one prior-fedora task so use that one.
+# Envars all defined by CI config.
 # shellcheck disable=SC2154
-if [[ "${DISTRO_NV}" =~ fedora ]]; then
+if [[ "${DISTRO_NV}" == "$PRIOR_FEDORA_NAME" ]]; then
     msg "Checking shell scripts"
     showrun ooe.sh dnf install -y ShellCheck  # small/quick addition
     showrun shellcheck --format=tty \
@@ -45,8 +62,15 @@ if [[ "${DISTRO_NV}" =~ fedora ]]; then
     # Tests for lib.sh
     showrun ${SCRIPT_BASE}/lib.sh.t
 
-    export PREBUILD=1
-    showrun bash ${CIRRUS_WORKING_DIR}/.github/actions/check_cirrus_cron/test.sh
+    # Run this during daily cron job to prevent a GraphQL API change/breakage
+    # from impacting every PR.  Down-side being if it does fail, a maintainer
+    # will need to do some archaeology to find it.
+    # Defined by CI system
+    # shellcheck disable=SC2154
+    if [[ "$CIRRUS_CRON" == "main" ]]; then
+      export PREBUILD=1
+      showrun bash ${CIRRUS_WORKING_DIR}/.github/actions/check_cirrus_cron/test.sh
+    fi
 fi
 
 msg "Checking 3rd party network service connectivity"
@@ -68,7 +92,7 @@ cat ${CIRRUS_WORKING_DIR}/${SCRIPT_BASE}/required_host_ports.txt | \
 # Verify we can pull metadata from a few key testing images on quay.io
 # in the 'libpod' namespace.  This is mostly aimed at validating the
 # quay.io service is up and responsive.  Images were hand-picked with
-# egrep -ro 'quay.io/libpod/.+:latest' test | sort -u
+# grep -E -ro 'quay.io/libpod/.+:latest' test | sort -u
 TEST_IMGS=(\
     alpine:latest
     busybox:latest

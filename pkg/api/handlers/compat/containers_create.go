@@ -11,29 +11,31 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containers/buildah/pkg/parse"
+	"github.com/containers/common/libimage"
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/cgroups"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/api/handlers"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
-	"github.com/containers/podman/v4/pkg/rootless"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/api/handlers"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/pkg/rootless"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	"github.com/containers/storage"
 	"github.com/docker/docker/api/types/mount"
-	"github.com/gorilla/schema"
 )
 
 func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	query := struct {
-		Name string `schema:"name"`
+		Name     string `schema:"name"`
+		Platform string `schema:"platform"`
 	}{
 		// override any golang type defaults
 	}
@@ -69,7 +71,16 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	body.Config.Image = imageName
 
-	newImage, resolvedName, err := runtime.LibimageRuntime().LookupImage(body.Config.Image, nil)
+	lookupImageOptions := libimage.LookupImageOptions{}
+	if query.Platform != "" {
+		var err error
+		lookupImageOptions.OS, lookupImageOptions.Architecture, lookupImageOptions.Variant, err = parse.Platform(query.Platform)
+		if err != nil {
+			utils.Error(w, http.StatusBadRequest, fmt.Errorf("parsing platform: %w", err))
+			return
+		}
+	}
+	newImage, resolvedName, err := runtime.LibimageRuntime().LookupImage(body.Config.Image, &lookupImageOptions)
 	if err != nil {
 		if errors.Is(err, storage.ErrImageUnknown) {
 			utils.Error(w, http.StatusNotFound, fmt.Errorf("no such image: %w", err))
@@ -104,7 +115,10 @@ func CreateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// moby always create the working directory
-	sg.CreateWorkingDir = true
+	localTrue := true
+	sg.CreateWorkingDir = &localTrue
+	// moby doesn't inherit /etc/hosts from host
+	sg.BaseHostsFile = "none"
 
 	ic := abi.ContainerEngine{Libpod: runtime}
 	report, err := ic.ContainerCreate(r.Context(), sg)
@@ -262,13 +276,20 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 	}
 
 	// special case for NetworkMode, the podman default is slirp4netns for
-	// rootless but for better docker compat we want bridge.
+	// rootless but for better docker compat we want bridge. Do this only if
+	// the default config in containers.conf wasn't overridden to use another
+	// value than the default "private" one.
 	netmode := string(cc.HostConfig.NetworkMode)
+	configDefaultNetNS := rtc.Containers.NetNS
 	if netmode == "" || netmode == "default" {
-		netmode = "bridge"
+		if configDefaultNetNS == "" || configDefaultNetNS == string(specgen.Default) || configDefaultNetNS == string(specgen.Private) {
+			netmode = "bridge"
+		} else {
+			netmode = configDefaultNetNS
+		}
 	}
 
-	nsmode, networks, netOpts, err := specgen.ParseNetworkFlag([]string{netmode}, false)
+	nsmode, networks, netOpts, err := specgen.ParseNetworkFlag([]string{netmode})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -287,8 +308,13 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		NoHosts:        rtc.Containers.NoHosts,
 	}
 
-	// sigh docker-compose sets the mac address on the container config instead on the per network endpoint config
-	containerMacAddress := cc.MacAddress
+	// docker-compose sets the mac address on the container config instead
+	// on the per network endpoint config
+	//
+	// This field is deprecated since API v1.44 where
+	// EndpointSettings.MacAddress is used instead (and has precedence
+	// below).  Let's still use it for backwards compat.
+	containerMacAddress := cc.MacAddress //nolint:staticcheck
 
 	// network names
 	switch {
@@ -385,7 +411,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		// Detach:            false, // don't need
 		// DetachKeys:        "",    // don't need
 		Devices:           devices,
-		DeviceCgroupRule:  nil,
+		DeviceCgroupRule:  cc.HostConfig.DeviceCgroupRules,
 		DeviceReadBPs:     readBps,
 		DeviceReadIOPs:    readIops,
 		DeviceWriteBPs:    writeBps,
@@ -395,7 +421,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		Expose:            expose,
 		GroupAdd:          cc.HostConfig.GroupAdd,
 		Hostname:          cc.Config.Hostname,
-		ImageVolume:       "bind",
+		ImageVolume:       "anonymous",
 		Init:              init,
 		Interactive:       cc.Config.OpenStdin,
 		IPC:               string(cc.HostConfig.IpcMode),
@@ -417,6 +443,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 		Rm:                cc.HostConfig.AutoRemove,
 		SecurityOpt:       cc.HostConfig.SecurityOpt,
 		StopSignal:        cc.Config.StopSignal,
+		StopTimeout:       rtc.Engine.StopTimeout, // podman default
 		StorageOpts:       stringMaptoArray(cc.HostConfig.StorageOpt),
 		Sysctl:            stringMaptoArray(cc.HostConfig.Sysctls),
 		Systemd:           "true", // podman default
@@ -476,7 +503,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 	// This also handles volumes duplicated between cc.HostConfig.Mounts and
 	// cc.Volumes, as seen in compose v2.0.
 	for vol := range cc.Volumes {
-		if _, ok := volDestinations[filepath.Clean(vol)]; ok {
+		if _, ok := volDestinations[vol]; ok {
 			continue
 		}
 		cliOpts.Volume = append(cliOpts.Volume, vol)
@@ -534,7 +561,7 @@ func cliOpts(cc handlers.CreateContainerConfig, rtc *config.Config) (*entities.C
 	}
 
 	if len(cc.HostConfig.RestartPolicy.Name) > 0 {
-		policy := cc.HostConfig.RestartPolicy.Name
+		policy := string(cc.HostConfig.RestartPolicy.Name)
 		// only add restart count on failure
 		if cc.HostConfig.RestartPolicy.IsOnFailure() {
 			policy += fmt.Sprintf(":%d", cc.HostConfig.RestartPolicy.MaximumRetryCount)

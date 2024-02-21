@@ -6,10 +6,10 @@ import (
 	"io"
 
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/pkg/bindings/generate"
-	"github.com/containers/podman/v4/pkg/bindings/kube"
-	"github.com/containers/podman/v4/pkg/bindings/play"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/bindings/generate"
+	"github.com/containers/podman/v5/pkg/bindings/kube"
+	"github.com/containers/podman/v5/pkg/bindings/play"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 )
 
 func (ic *ContainerEngine) GenerateSystemd(ctx context.Context, nameOrID string, opts entities.GenerateSystemdOptions) (*entities.GenerateSystemdReport, error) {
@@ -46,7 +46,7 @@ func (ic *ContainerEngine) GenerateSystemd(ctx context.Context, nameOrID string,
 //
 // Note: Caller is responsible for closing returned Reader
 func (ic *ContainerEngine) GenerateKube(ctx context.Context, nameOrIDs []string, opts entities.GenerateKubeOptions) (*entities.GenerateKubeReport, error) {
-	options := new(generate.KubeOptions).WithService(opts.Service)
+	options := new(generate.KubeOptions).WithService(opts.Service).WithType(opts.Type).WithReplicas(opts.Replicas).WithNoTrunc(opts.UseLongAnnotations).WithPodmanOnly(opts.PodmanOnly)
 	return generate.Kube(ic.ClientCtx, nameOrIDs, options)
 }
 
@@ -58,7 +58,7 @@ func (ic *ContainerEngine) PlayKube(ctx context.Context, body io.Reader, opts en
 	options := new(kube.PlayOptions).WithAuthfile(opts.Authfile).WithUsername(opts.Username).WithPassword(opts.Password)
 	options.WithCertDir(opts.CertDir).WithQuiet(opts.Quiet).WithSignaturePolicy(opts.SignaturePolicy).WithConfigMaps(opts.ConfigMaps)
 	options.WithLogDriver(opts.LogDriver).WithNetwork(opts.Networks).WithSeccompProfileRoot(opts.SeccompProfileRoot)
-	options.WithStaticIPs(opts.StaticIPs).WithStaticMACs(opts.StaticMACs)
+	options.WithStaticIPs(opts.StaticIPs).WithStaticMACs(opts.StaticMACs).WithWait(opts.Wait).WithServiceContainer(opts.ServiceContainer).WithReplace(opts.Replace)
 	if len(opts.LogOptions) > 0 {
 		options.WithLogOptions(opts.LogOptions)
 	}
@@ -72,6 +72,9 @@ func (ic *ContainerEngine) PlayKube(ctx context.Context, body io.Reader, opts en
 	if start := opts.Start; start != types.OptionalBoolUndefined {
 		options.WithStart(start == types.OptionalBoolTrue)
 	}
+	options.WithPublishPorts(opts.PublishPorts)
+	options.WithPublishAllPorts(opts.PublishAllPorts)
+	options.WithNoTrunc(opts.UseLongAnnotations)
 	return play.KubeWithBody(ic.ClientCtx, body, options)
 }
 

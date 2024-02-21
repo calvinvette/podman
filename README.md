@@ -1,20 +1,21 @@
 ![PODMAN logo](https://raw.githubusercontent.com/containers/common/main/logos/podman-logo-full-vert.png)
 
 # Podman: A tool for managing OCI containers and pods
+![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)
+![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/containers/podman)
+[![Go Report Card](https://goreportcard.com/badge/github.com/containers/libpod)](https://goreportcard.com/report/github.com/containers/libpod)
+
+<br/>
 
 Podman (the POD MANager) is a tool for managing containers and images, volumes mounted into those containers, and pods made from groups of containers.
 Podman runs containers on Linux, but can also be used on Mac and Windows systems using a Podman-managed virtual machine.
 Podman is based on libpod, a library for container lifecycle management that is also contained in this repository. The libpod library provides APIs for managing containers, pods, container images, and volumes.
 
-* [Latest Version: 4.3.1](https://github.com/containers/podman/releases/tag/v4.3.1)
-  * Latest Remote client for Windows
-  * Latest Remote client for macOS
-  * Latest Static Remote client for Linux
 
 All releases are GPG signed. Public keys of members of the team approved to make releases are located [here](https://github.com/containers/release-keys/tree/main/podman).
 
 * Continuous Integration:
-  * [![Build Status](https://api.cirrus-ci.com/github/containers/podman.svg)](https://cirrus-ci.com/github/containers/podman/master)
+  * [![Build Status](https://api.cirrus-ci.com/github/containers/podman.svg)](https://cirrus-ci.com/github/containers/podman/main)
   * [GoDoc: ![GoDoc](https://godoc.org/github.com/containers/podman/libpod?status.svg)](https://godoc.org/github.com/containers/podman/libpod)
   * [Downloads](DOWNLOADS.md)
 
@@ -25,7 +26,7 @@ At a high level, the scope of Podman and libpod is the following:
 * Support for multiple container image formats, including OCI and Docker images.
 * Full management of those images, including pulling from various sources (including trust and verification), creating (built via Containerfile or Dockerfile or committed from a container), and pushing to registries and other storage backends.
 * Full management of container lifecycle, including creation (both from an image and from an exploded root filesystem), running, checkpointing and restoring (via CRIU), and removal.
-* Full management of container networking, using CNI, Netavark, and slirp4netns
+* Full management of container networking, using Netavark.
 * Support for pods, groups of containers that share resources and are managed together.
 * Support for running containers and pods without root or other elevated privileges.
 * Resource isolation of containers and pods.
@@ -36,9 +37,11 @@ At a high level, the scope of Podman and libpod is the following:
 
 ## Roadmap
 
-1. A fully-featured GUI frontend for `podman machine`
-1. Further improvements to `podman generate kube` and `podman play kube`
-1. Improvements to Pods, including the addition of pod-level resource limits
+1. Further improvements to `podman machine` to better support Podman Desktop and other developer usecases.
+1. Support for [conmon-rs](https://github.com/containers/conmon-rs), which will improve container logging.
+1. Support for the BuildKit API.
+1. Performance and stability improvements.
+1. Reductions to the size of the Podman binary.
 
 ## Communications
 
@@ -71,7 +74,10 @@ A little configuration by an administrator is required before rootless Podman ca
 
 ## Podman Desktop
 
-[Podman Desktop](https://podman-desktop.io/) is a new project under the container organization built to help the developers working with containers from their local environment with a desktop UI. Podman Desktop is still in its early days, but already provides capabilities to list your images, interact with containers (access logs, get a terminal), connect to registries (pull private images, push your images) and configure podman settings (proxies). The project develops on [Github](https://github.com/containers/podman-desktop) and contributors are welcome.
+[Podman Desktop](https://podman-desktop.io/) provides a local development environment for Podman and Kubernetes on Linux, Windows, and Mac machines.
+It is a full-featured desktop UI frontend for Podman which uses the `podman machine` backend on non-Linux operating systems to run containers.
+It supports full container lifecycle management (building, pulling, and pushing images, creating and managing containers, creating and managing pods, and working with Kubernetes YAML).
+The project develops on [GitHub](https://github.com/containers/podman-desktop) and contributors are welcome.
 
 ## Out of scope
 
@@ -86,7 +92,7 @@ Podman uses OCI projects and best of breed libraries for different aspects:
 - Runtime: We use the [OCI runtime tools](https://github.com/opencontainers/runtime-tools) to generate OCI runtime configurations that can be used with any OCI-compliant runtime, like [crun](https://github.com/containers/crun/) and [runc](https://github.com/opencontainers/runc/).
 - Images: Image management uses the [containers/image](https://github.com/containers/image) library.
 - Storage: Container and image storage is managed by [containers/storage](https://github.com/containers/storage).
-- Networking: Networking support through use of [Netavark](https://github.com/containers/netavark) and [Aardvark](https://github.com/containers/aardvark-dns). Support for [CNI](https://github.com/containernetworking/cni) is also available. Rootless networking is handled via [slirp4netns](https://github.com/rootless-containers/slirp4netns).
+- Networking: Networking support through use of [Netavark](https://github.com/containers/netavark) and [Aardvark](https://github.com/containers/aardvark-dns).  Rootless networking is handled via [slirp4netns](https://github.com/rootless-containers/slirp4netns).
 - Builds: Builds are supported via [Buildah](https://github.com/containers/buildah).
 - Conmon: [Conmon](https://github.com/containers/conmon) is a tool for monitoring OCI runtimes, used by both Podman and CRI-O.
 - Seccomp: A unified [Seccomp](https://github.com/containers/common/blob/main/pkg/seccomp/seccomp.json) policy for Podman, Buildah, and CRI-O.
@@ -98,7 +104,7 @@ For blogs, release announcements and more, please checkout the [podman.io](https
 **[Installation notes](install.md)**
 Information on how to install Podman in your environment.
 
-**[OCI Hooks Support](pkg/hooks/README.md)**
+**[OCI Hooks Support](https://github.com/containers/common/blob/main/pkg/hooks/README.md)**
 Information on how Podman configures [OCI Hooks][spec-hooks] to run when launching a container.
 
 **[Podman API](https://docs.podman.io/en/latest/_static/api.html)**
@@ -168,9 +174,9 @@ storage differences, you can not see Podman containers from within Buildah or vi
 In short, Buildah is an efficient way to create OCI images while Podman allows
 you to manage and maintain those images and containers in a production environment using
 familiar container cli commands.  For more details, see the
-[Container Tools Guide](https://github.com/containers/buildah/tree/master/docs/containertools).
+[Container Tools Guide](https://github.com/containers/buildah/tree/main/docs/containertools).
 
-## [Podman Hello](https://podman.io/images/podman-hello.jpg)
+## Podman Hello
 ```
 $ podman run quay.io/podman/hello
 Trying to pull quay.io/podman/hello:latest...
@@ -196,8 +202,3 @@ Website:   https://podman.io
 Documents: https://docs.podman.io
 Twitter:   @Podman_io
 ```
-
-## Podman Former API (Varlink)
-Podman formerly offered a Varlink-based API for remote management of containers. However, this API
-was replaced by the REST API. Varlink support has been removed as of the 3.0 release.
-For more details, you can see [this blog](https://podman.io/blogs/2020/01/17/podman-new-api.html).

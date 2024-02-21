@@ -10,7 +10,7 @@ import (
 
 	imageAuth "github.com/containers/image/v5/pkg/docker/config"
 	"github.com/containers/image/v5/types"
-	dockerAPITypes "github.com/docker/docker/api/types"
+	dockerAPITypes "github.com/docker/docker/api/types/registry"
 	"github.com/sirupsen/logrus"
 )
 
@@ -268,7 +268,7 @@ func normalizeAuthFileKey(authFileKey string) string {
 	stripped = strings.TrimPrefix(stripped, "https://")
 
 	if stripped != authFileKey { // URLs are interpreted to mean complete registries
-		stripped = strings.SplitN(stripped, "/", 2)[0]
+		stripped, _, _ = strings.Cut(stripped, "/")
 	}
 
 	// Only non-namespaced registry names (or URLs) need to be normalized; repo namespaces

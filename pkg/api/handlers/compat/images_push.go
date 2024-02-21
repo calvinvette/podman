@@ -4,35 +4,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod"
-	"github.com/containers/podman/v4/pkg/api/handlers/utils"
-	api "github.com/containers/podman/v4/pkg/api/types"
-	"github.com/containers/podman/v4/pkg/auth"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/domain/infra/abi"
+	"github.com/containers/podman/v5/libpod"
+	"github.com/containers/podman/v5/pkg/api/handlers/utils"
+	api "github.com/containers/podman/v5/pkg/api/types"
+	"github.com/containers/podman/v5/pkg/auth"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/infra/abi"
 	"github.com/containers/storage"
 	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/gorilla/schema"
 	"github.com/sirupsen/logrus"
 )
 
 // PushImage is the handler for the compat http endpoint for pushing images.
 func PushImage(w http.ResponseWriter, r *http.Request) {
-	decoder := r.Context().Value(api.DecoderKey).(*schema.Decoder)
+	decoder := utils.GetDecoder(r)
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-
-	digestFile, err := os.CreateTemp("", "digest.txt")
-	if err != nil {
-		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("unable to create tempfile: %w", err))
-		return
-	}
-	defer digestFile.Close()
 
 	// Now use the ABI implementation to prevent us from having duplicate
 	// code.
@@ -97,15 +87,14 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 		password = authconf.Password
 	}
 	options := entities.ImagePushOptions{
-		All:        query.All,
-		Authfile:   authfile,
-		Compress:   query.Compress,
-		Format:     query.Format,
-		Password:   password,
-		Username:   username,
-		DigestFile: digestFile.Name(),
-		Quiet:      true,
-		Progress:   make(chan types.ProgressProperties),
+		All:      query.All,
+		Authfile: authfile,
+		Compress: query.Compress,
+		Format:   query.Format,
+		Password: password,
+		Username: username,
+		Quiet:    true,
+		Progress: make(chan types.ProgressProperties),
 	}
 	if _, found := r.URL.Query()["tlsVerify"]; found {
 		options.SkipTLSVerify = types.NewOptionalBool(!query.TLSVerify)
@@ -118,36 +107,53 @@ func PushImage(w http.ResponseWriter, r *http.Request) {
 		destination = imageName
 	}
 
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(true)
+
 	flush := func() {}
 	if flusher, ok := w.(http.Flusher); ok {
 		flush = flusher.Flush
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Header().Set("Content-Type", "application/json")
-	flush()
-
-	var report jsonmessage.JSONMessage
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(true)
-
-	report.Status = fmt.Sprintf("The push refers to repository [%s]", imageName)
-	if err := enc.Encode(report); err != nil {
-		logrus.Warnf("Failed to json encode error %q", err.Error())
+	statusWritten := false
+	writeStatusCode := func(code int) {
+		if !statusWritten {
+			w.WriteHeader(code)
+			w.Header().Set("Content-Type", "application/json")
+			flush()
+			statusWritten = true
+		}
 	}
-	flush()
+
+	referenceWritten := false
+	writeReference := func() {
+		if !referenceWritten {
+			var report jsonmessage.JSONMessage
+			report.Status = fmt.Sprintf("The push refers to repository [%s]", imageName)
+			if err := enc.Encode(report); err != nil {
+				logrus.Warnf("Failed to json encode error %q", err.Error())
+			}
+			flush()
+			referenceWritten = true
+		}
+	}
 
 	pushErrChan := make(chan error)
+	var pushReport *entities.ImagePushReport
 	go func() {
-		pushErrChan <- imageEngine.Push(r.Context(), imageName, destination, options)
+		var err error
+		pushReport, err = imageEngine.Push(r.Context(), imageName, destination, options)
+		pushErrChan <- err
 	}()
 
 loop: // break out of for/select infinite loop
 	for {
-		report = jsonmessage.JSONMessage{}
+		var report jsonmessage.JSONMessage
 
 		select {
 		case e := <-options.Progress:
+			writeStatusCode(http.StatusOK)
+			writeReference()
 			switch e.Event {
 			case types.ProgressEventNewArtifact:
 				report.Status = "Preparing"
@@ -172,8 +178,11 @@ loop: // break out of for/select infinite loop
 			if err != nil {
 				var msg string
 				if errors.Is(err, storage.ErrImageUnknown) {
+					// Image may have been removed in the meantime.
+					writeStatusCode(http.StatusNotFound)
 					msg = "An image does not exist locally with the tag: " + imageName
 				} else {
+					writeStatusCode(http.StatusInternalServerError)
 					msg = err.Error()
 				}
 				report.Error = &jsonmessage.JSONError{
@@ -185,25 +194,21 @@ loop: // break out of for/select infinite loop
 				}
 				flush()
 				break loop
+			} else {
+				writeStatusCode(http.StatusOK)
+				writeReference() // There may not be any progress, so make sure the reference gets written
 			}
 
-			digestBytes, err := io.ReadAll(digestFile)
-			if err != nil {
-				report.Error = &jsonmessage.JSONError{
-					Message: err.Error(),
-				}
-				report.ErrorMessage = err.Error()
-				if err := enc.Encode(report); err != nil {
-					logrus.Warnf("Failed to json encode error %q", err.Error())
-				}
-				flush()
-				break loop
-			}
 			tag := query.Tag
 			if tag == "" {
 				tag = "latest"
 			}
-			report.Status = fmt.Sprintf("%s: digest: %s size: %d", tag, string(digestBytes), len(rawManifest))
+
+			var digestStr string
+			if pushReport != nil {
+				digestStr = pushReport.ManifestDigest
+			}
+			report.Status = fmt.Sprintf("%s: digest: %s size: %d", tag, digestStr, len(rawManifest))
 			if err := enc.Encode(report); err != nil {
 				logrus.Warnf("Failed to json encode error %q", err.Error())
 			}

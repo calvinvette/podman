@@ -1,5 +1,4 @@
 //go:build linux
-// +build linux
 
 package main
 
@@ -17,7 +16,7 @@ import (
 
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/containers/common/libnetwork/types"
-	"github.com/containers/podman/v4/pkg/rootlessport"
+	"github.com/containers/common/pkg/rootlessport"
 	rkport "github.com/rootless-containers/rootlesskit/pkg/port"
 	rkbuiltin "github.com/rootless-containers/rootlesskit/pkg/port/builtin"
 	rkportutil "github.com/rootless-containers/rootlesskit/pkg/port/portutil"

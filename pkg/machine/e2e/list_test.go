@@ -4,12 +4,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/common/pkg/util"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	jsoniter "github.com/json-iterator/go"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
+	"golang.org/x/exp/slices"
 )
 
 var _ = Describe("podman machine list", func() {
@@ -52,12 +52,12 @@ var _ = Describe("podman machine list", func() {
 		firstList, err := mb.setCmd(list.withQuiet()).run()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(firstList).Should(Exit(0))
-		Expect(firstList.outputToStringSlice()).To(HaveLen(0)) // No header with quiet
+		Expect(firstList.outputToStringSlice()).To(BeEmpty()) // No header with quiet
 
 		noheaderSession, err := mb.setCmd(list.withNoHeading()).run() // noheader
 		Expect(err).NotTo(HaveOccurred())
 		Expect(noheaderSession).Should(Exit(0))
-		Expect(noheaderSession.outputToStringSlice()).To(HaveLen(0))
+		Expect(noheaderSession.outputToStringSlice()).To(BeEmpty())
 
 		i := new(initMachine)
 		session, err := mb.setName(name1).setCmd(i.withImagePath(mb.imagePath)).run()
@@ -75,20 +75,31 @@ var _ = Describe("podman machine list", func() {
 
 		listNames := secondList.outputToStringSlice()
 		stripAsterisk(listNames)
-		Expect(util.StringInSlice(name1, listNames)).To(BeTrue())
-		Expect(util.StringInSlice(name2, listNames)).To(BeTrue())
+		Expect(slices.Contains(listNames, name1)).To(BeTrue())
+		Expect(slices.Contains(listNames, name2)).To(BeTrue())
 	})
 
 	It("list machine: check if running while starting", func() {
+		skipIfWSL("the below logic does not work on WSL.  #20978")
 		i := new(initMachine)
 		session, err := mb.setCmd(i.withImagePath(mb.imagePath)).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(session).To(Exit(0))
+
+		l := new(listMachine)
+		listSession, err := mb.setCmd(l.withFormat("{{.LastUp}}")).run()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listSession).To(Exit(0))
+		Expect(listSession.outputToString()).To(Equal("Never"))
+
+		// The logic in this test stanza is seemingly invalid on WSL.
+		// issue #20978 reflects this change
 		s := new(startMachine)
 		startSession, err := mb.setCmd(s).runWithoutWait()
 		Expect(err).ToNot(HaveOccurred())
-		l := new(listMachine)
-		for i := 0; i < 30; i++ {
+		wait := 3
+		retries := (int)(mb.timeout/time.Second) / wait
+		for i := 0; i < retries; i++ {
 			listSession, err := mb.setCmd(l).run()
 			Expect(listSession).To(Exit(0))
 			Expect(err).ToNot(HaveOccurred())
@@ -97,10 +108,10 @@ var _ = Describe("podman machine list", func() {
 			} else {
 				break
 			}
-			time.Sleep(3 * time.Second)
+			time.Sleep(time.Duration(wait) * time.Second)
 		}
 		Expect(startSession).To(Exit(0))
-		listSession, err := mb.setCmd(l).run()
+		listSession, err = mb.setCmd(l).run()
 		Expect(listSession).To(Exit(0))
 		Expect(err).ToNot(HaveOccurred())
 		Expect(listSession.outputToString()).To(ContainSubstring("Currently running"))
@@ -125,7 +136,7 @@ var _ = Describe("podman machine list", func() {
 
 		listNames := listSession.outputToStringSlice()
 		stripAsterisk(listNames)
-		Expect(util.StringInSlice(name1, listNames)).To(BeTrue())
+		Expect(slices.Contains(listNames, name1)).To(BeTrue())
 
 		// --format json
 		list2 := new(listMachine)
@@ -133,6 +144,7 @@ var _ = Describe("podman machine list", func() {
 		listSession2, err := mb.setCmd(list2).run()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(listSession2).To(Exit(0))
+		Expect(listSession2.outputToString()).To(BeValidJSON())
 
 		var listResponse []*entities.ListReporter
 		err = jsoniter.Unmarshal(listSession2.Bytes(), &listResponse)

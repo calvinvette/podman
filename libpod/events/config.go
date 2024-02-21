@@ -24,7 +24,7 @@ const (
 type Event struct {
 	// ContainerExitCode is for storing the exit code of a container which can
 	// be used for "internal" event notification
-	ContainerExitCode int `json:",omitempty"`
+	ContainerExitCode *int `json:",omitempty"`
 	// ID can be for the container, image, volume, etc
 	ID string `json:",omitempty"`
 	// Image used where applicable
@@ -184,7 +184,7 @@ const (
 	// Renumber indicates that lock numbers were reallocated at user
 	// request.
 	Renumber Status = "renumber"
-	// Restart indicates the target was restarted via an API call.
+	// Restart indicates that the target was restarted via an API call.
 	Restart Status = "restart"
 	// Restore ...
 	Restore Status = "restore"

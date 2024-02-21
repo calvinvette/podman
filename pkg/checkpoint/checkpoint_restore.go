@@ -1,3 +1,5 @@
+//go:build !remote
+
 package checkpoint
 
 import (
@@ -9,13 +11,13 @@ import (
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
 	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
-	"github.com/containers/podman/v4/libpod"
-	ann "github.com/containers/podman/v4/pkg/annotations"
-	"github.com/containers/podman/v4/pkg/checkpoint/crutils"
-	"github.com/containers/podman/v4/pkg/criu"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgen/generate"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/libpod"
+	ann "github.com/containers/podman/v5/pkg/annotations"
+	"github.com/containers/podman/v5/pkg/checkpoint/crutils"
+	"github.com/containers/podman/v5/pkg/criu"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgen/generate"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	spec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
@@ -93,8 +95,8 @@ func CRImportCheckpoint(ctx context.Context, runtime *libpod.Runtime, restoreOpt
 
 	if restoreOptions.Pod != "" {
 		// Restoring into a Pod requires much newer versions of CRIU
-		if !criu.CheckForCriu(criu.PodCriuVersion) {
-			return nil, fmt.Errorf("restoring containers into pods requires at least CRIU %d", criu.PodCriuVersion)
+		if err := criu.CheckForCriu(criu.PodCriuVersion); err != nil {
+			return nil, fmt.Errorf("restoring containers into pod: %w", err)
 		}
 		// The runtime also has to support it
 		if !crutils.CRRuntimeSupportsPodCheckpointRestore(runtime.GetOCIRuntimePath()) {

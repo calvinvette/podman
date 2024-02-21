@@ -26,10 +26,12 @@ load helpers
 {{.Labels.created_at}}   | 20[0-9-]\\\+T[0-9:]\\\+Z
 "
 
-    parse_table "$tests" | while read fmt expect; do
+    defer-assertion-failures
+
+    while read fmt expect; do
         run_podman images --format "$fmt"
         is "$output" "$expect" "podman images --format '$fmt'"
-    done
+    done < <(parse_table "$tests")
 
     run_podman images --format "{{.ID}}" --no-trunc
     is "$output" "sha256:[0-9a-f]\\{64\\}\$" "podman images --no-trunc"
@@ -49,12 +51,11 @@ Labels.created_at | 20[0-9-]\\\+T[0-9:]\\\+Z
 
     run_podman images -a --format json
 
-    parse_table "$tests" | while read field expect; do
+    while read field expect; do
         actual=$(echo "$output" | jq -r ".[0].$field")
         dprint "# actual=<$actual> expect=<$expect}>"
         is "$actual" "$expect" "jq .$field"
-    done
-
+    done < <(parse_table "$tests")
 }
 
 @test "podman images - history output" {
@@ -126,6 +127,10 @@ Labels.created_at | 20[0-9-]\\\+T[0-9:]\\\+Z
 # Regression test for https://github.com/containers/podman/issues/7651
 # in which "podman pull image-with-sha" causes "images -a" to crash
 @test "podman images -a, after pulling by sha " {
+    # This test requires that $IMAGE be 100% the same as the registry one
+    run_podman rmi -a -f
+    _prefetch $IMAGE
+
     # Get a baseline for 'images -a'
     run_podman images -a
     local images_baseline="$output"
@@ -272,8 +277,7 @@ Deleted: $pauseID" "infra images gets removed as well"
     pname=$(random_string)
     run_podman create --pod new:$pname $IMAGE
 
-    run_podman version --format "{{.Server.Version}}-{{.Server.Built}}"
-    pauseImage=localhost/podman-pause:$output
+    pauseImage=$(pause_image)
     run_podman inspect --format '{{.ID}}' $pauseImage
     pauseID=$output
 
@@ -309,5 +313,99 @@ Deleted: $pauseID"
     run_podman image rm --force bogus
     is "$output" "" "Should print no output"
 }
+
+@test "podman images - commit docker with comment" {
+    run_podman run --name my-container -d $IMAGE top
+    run_podman 125 commit -m comment my-container my-test-image
+    assert "$output" == "Error: messages are only compatible with the docker image format (-f docker)" "podman should fail unless docker format"
+
+    # Without -q: verbose output, but only on podman-local, not remote
+    run_podman commit my-container --format docker -m comment my-test-image1
+    if ! is_remote; then
+        assert "$output" =~ "Getting image.*Writing manif" \
+               "Without -q, verbose output"
+    fi
+
+    # With -q, both local and remote: only an image ID
+    run_podman commit -q my-container --format docker -m comment my-test-image2
+    assert "$output" =~ "^[0-9a-f]{64}\$" \
+           "With -q, output is a commit ID, no warnings or other output"
+
+    run_podman rmi my-test-image1 my-test-image2
+    run_podman rm my-container --force -t 0
+}
+
+@test "podman pull image with additional store" {
+    skip_if_remote "only works on local"
+
+    # overlay or vfs
+    local storagedriver="$(podman_storage_driver)"
+
+    local imstore=$PODMAN_TMPDIR/imagestore
+    local sconf=$PODMAN_TMPDIR/storage.conf
+    cat >$sconf <<EOF
+[storage]
+driver="$storagedriver"
+
+[storage.options]
+additionalimagestores = [ "$imstore/root" ]
+EOF
+
+    skopeo copy containers-storage:$IMAGE \
+           containers-storage:\[${storagedriver}@${imstore}/root+${imstore}/runroot\]$IMAGE
+
+    # IMPORTANT! Use -2/-1 indices, not 0/1, because $SYSTEMD_IMAGE may be
+    # present in store, and if it is it will precede $IMAGE.
+    CONTAINERS_STORAGE_CONF=$sconf run_podman images -a -n --format "{{.Repository}}:{{.Tag}} {{.ReadOnly}}"
+    assert "${#lines[*]}" -ge 2 "at least 2 lines from 'podman images'"
+    is "${lines[-2]}" "$IMAGE false" "image from readonly store"
+    is "${lines[-1]}" "$IMAGE true" "image from readwrite store"
+
+    CONTAINERS_STORAGE_CONF=$sconf run_podman images -a -n --format "{{.Id}}"
+    id=${lines[-1]}
+
+    CONTAINERS_STORAGE_CONF=$sconf run_podman pull -q $IMAGE
+    is "$output" "$id" "pull -q $IMAGE, using storage.conf"
+
+    run_podman --root $imstore/root rmi --all
+}
+
+@test "podman images with concurrent removal" {
+    skip_if_remote "following test is not supported for remote clients"
+    local count=5
+
+    # First build $count images
+    for i in $(seq --format '%02g' 1 $count); do
+        cat >$PODMAN_TMPDIR/Containerfile <<EOF
+FROM $IMAGE
+RUN echo $i
+EOF
+        run_podman build -q -t i$i $PODMAN_TMPDIR
+    done
+
+    run_podman images
+    # Now remove all images in parallel and in the background and make sure
+    # that listing all images does not fail (see BZ 2216700).
+    for i in $(seq --format '%02g' 1 $count); do
+        timeout --foreground -v --kill=10 60 \
+                $PODMAN rmi i$i &
+    done
+
+    tries=100
+    while [[ ${#lines[*]} -gt 1 ]] && [[ $tries -gt 0 ]]; do
+        # Prior to #18980, 'podman images' during rmi could fail with 'image not known'
+        # '0+w' because we sometimes get warnings.
+        run_podman 0+w images --format "{{.ID}} {{.Names}}"
+        allow_warnings "Top layer .* of image .* not found in layer tree"
+        tries=$((tries - 1))
+    done
+
+    if [[ $tries -eq 0 ]]; then
+        die "Timed out waiting for images to be removed"
+    fi
+
+    wait
+}
+
 
 # vim: filetype=sh

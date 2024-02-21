@@ -7,11 +7,11 @@ import (
 
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/parse"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgen"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/cmd/podman/parse"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgen"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -95,7 +95,7 @@ func DefineNetFlags(cmd *cobra.Command) {
 }
 
 // NetFlagsToNetOptions parses the network flags for the given cmd.
-func NetFlagsToNetOptions(opts *entities.NetOptions, flags pflag.FlagSet, pastaNetworkNameExists bool) (*entities.NetOptions, error) {
+func NetFlagsToNetOptions(opts *entities.NetOptions, flags pflag.FlagSet) (*entities.NetOptions, error) {
 	var (
 		err error
 	)
@@ -192,7 +192,7 @@ func NetFlagsToNetOptions(opts *entities.NetOptions, flags pflag.FlagSet, pastaN
 			return nil, err
 		}
 
-		ns, networks, options, err := specgen.ParseNetworkFlag(network, pastaNetworkNameExists)
+		ns, networks, options, err := specgen.ParseNetworkFlag(network)
 		if err != nil {
 			return nil, err
 		}

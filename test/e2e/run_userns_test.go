@@ -5,11 +5,12 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
-	. "github.com/containers/podman/v4/test/utils"
+	. "github.com/containers/podman/v5/test/utils"
 	"github.com/containers/storage"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
@@ -28,12 +29,6 @@ func createContainersConfFileWithCustomUserns(pTest *PodmanTestIntegration, user
 }
 
 var _ = Describe("Podman UserNS support", func() {
-	var (
-		tempdir    string
-		err        error
-		podmanTest *PodmanTestIntegration
-	)
-
 	BeforeEach(func() {
 		if os.Getenv("SKIP_USERNS") != "" {
 			Skip("Skip userns tests.")
@@ -41,19 +36,6 @@ var _ = Describe("Podman UserNS support", func() {
 		if _, err := os.Stat("/proc/self/uid_map"); err != nil {
 			Skip("User namespaces not supported.")
 		}
-		tempdir, err = CreateTempDirInTempDir()
-		if err != nil {
-			os.Exit(1)
-		}
-		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.Setup()
-	})
-
-	AfterEach(func() {
-		podmanTest.Cleanup()
-		f := CurrentGinkgoTestDescription()
-		processTestResult(f)
-		os.Unsetenv("CONTAINERS_CONF")
 	})
 
 	// Note: Lot of tests for build with --userns=auto are already there in buildah
@@ -64,7 +46,7 @@ var _ = Describe("Podman UserNS support", func() {
 	It("podman build with --userns=auto", func() {
 		u, err := user.Current()
 		Expect(err).ToNot(HaveOccurred())
-		name := u.Name
+		name := u.Username
 		if name == "root" {
 			name = "containers"
 		}
@@ -77,16 +59,16 @@ var _ = Describe("Podman UserNS support", func() {
 		}
 		session := podmanTest.Podman([]string{"build", "-f", "build/Containerfile.userns-auto", "-t", "test", "--userns=auto"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		// `1024` is the default size or length of the range of user IDs
 		// that is mapped between the two user namespaces by --userns=auto.
-		Expect(session.OutputToString()).To(ContainSubstring(fmt.Sprintf("%d", storage.AutoUserNsMinSize)))
+		Expect(session.OutputToString()).To(ContainSubstring(strconv.Itoa(storage.AutoUserNsMinSize)))
 	})
 
 	It("podman uidmapping and gidmapping", func() {
 		session := podmanTest.Podman([]string{"run", "--uidmap=0:100:5000", "--gidmap=0:200:5000", "alpine", "echo", "hello"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("hello"))
 	})
 
@@ -95,111 +77,120 @@ var _ = Describe("Podman UserNS support", func() {
 	//     https://github.com/containers/podman/pull/1066#issuecomment-403562116
 	// To avoid a potential future regression, use this as a test.
 	It("podman uidmapping and gidmapping with short-opts", func() {
-		session := podmanTest.Podman([]string{"run", "--uidmap=0:1:5000", "--gidmap=0:200:5000", "-it", "alpine", "echo", "hello"})
+		session := podmanTest.Podman([]string{"run", "--uidmap=0:1:5000", "--gidmap=0:200:5000", "alpine", "echo", "hello"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("hello"))
 	})
 
 	It("podman uidmapping and gidmapping with a volume", func() {
 		session := podmanTest.Podman([]string{"run", "--uidmap=0:1:500", "--gidmap=0:200:5000", "-v", "my-foo-volume:/foo:Z", "alpine", "echo", "hello"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("hello"))
 	})
 
 	It("podman uidmapping and gidmapping with an idmapped volume", func() {
+		SkipIfRunc(podmanTest, "Test not supported yet with runc (issue 17433, wontfix)")
+		SkipOnOSVersion("fedora", "36")
 		session := podmanTest.Podman([]string{"run", "--uidmap=0:1:500", "--gidmap=0:200:5000", "-v", "my-foo-volume:/foo:Z,idmap", "alpine", "stat", "-c", "#%u:%g#", "/foo"})
 		session.WaitWithDefaultTimeout()
 		if strings.Contains(session.ErrorToString(), "Operation not permitted") {
 			Skip("not sufficiently privileged")
 		}
-		Expect(session).Should(Exit(0))
+		if strings.Contains(session.ErrorToString(), "Invalid argument") {
+			Skip("the file system doesn't support idmapped mounts")
+		}
+		Expect(session).Should(ExitCleanly())
+		Expect(session.OutputToString()).To(ContainSubstring("#0:0#"))
+	})
+
+	It("podman uidmapping and gidmapping with an idmapped volume on existing directory", func() {
+		SkipIfRunc(podmanTest, "Test not supported yet with runc (issue 17433, wontfix)")
+		SkipOnOSVersion("fedora", "36")
+		// The directory /mnt already exists in the image
+		session := podmanTest.Podman([]string{"run", "--uidmap=0:1:500", "--gidmap=0:200:5000", "-v", "my-foo-volume:/mnt:Z,idmap", "alpine", "stat", "-c", "#%u:%g#", "/mnt"})
+		session.WaitWithDefaultTimeout()
+		if strings.Contains(session.ErrorToString(), "Operation not permitted") {
+			Skip("not sufficiently privileged")
+		}
+		if strings.Contains(session.ErrorToString(), "Invalid argument") {
+			Skip("the file system doesn't support idmapped mounts")
+		}
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("#0:0#"))
 	})
 
 	It("podman uidmapping and gidmapping --net=host", func() {
 		session := podmanTest.Podman([]string{"run", "--net=host", "--uidmap=0:1:5000", "--gidmap=0:200:5000", "alpine", "echo", "hello"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("hello"))
 	})
 
 	It("podman --userns=keep-id", func() {
 		session := podmanTest.Podman([]string{"run", "--userns=keep-id", "alpine", "id", "-u"})
 		session.WaitWithDefaultTimeout()
-		if os.Geteuid() == 0 {
-			Expect(session).Should(Exit(125))
-			return
-		}
 
-		Expect(session).Should(Exit(0))
-		uid := fmt.Sprintf("%d", os.Geteuid())
+		Expect(session).Should(ExitCleanly())
+		uid := strconv.Itoa(os.Geteuid())
 		Expect(session.OutputToString()).To(ContainSubstring(uid))
 
 		session = podmanTest.Podman([]string{"run", "--userns=keep-id:uid=10,gid=12", "alpine", "sh", "-c", "echo $(id -u):$(id -g)"})
 		session.WaitWithDefaultTimeout()
-		if os.Geteuid() == 0 {
-			Expect(session).Should(Exit(125))
-			return
-		}
 
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("10:12"))
 	})
 
 	It("podman --userns=keep-id check passwd", func() {
-		SkipIfNotRootless("keep-id only works in rootless mode")
 		session := podmanTest.Podman([]string{"run", "--userns=keep-id", "alpine", "id", "-un"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		u, err := user.Current()
 		Expect(err).ToNot(HaveOccurred())
-		Expect(session.OutputToString()).To(ContainSubstring(u.Name))
+		Expect(session.OutputToString()).To(Equal(u.Username))
 	})
 
 	It("podman --userns=keep-id root owns /usr", func() {
-		SkipIfNotRootless("keep-id only works in rootless mode")
 		session := podmanTest.Podman([]string{"run", "--userns=keep-id", "alpine", "stat", "-c%u", "/usr"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(Equal("0"))
 	})
 
 	It("podman --userns=keep-id --user root:root", func() {
-		SkipIfNotRootless("keep-id only works in rootless mode")
 		session := podmanTest.Podman([]string{"run", "--userns=keep-id", "--user", "root:root", "alpine", "id", "-u"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(Equal("0"))
 	})
 
 	It("podman run --userns=keep-id can add users", func() {
-		SkipIfNotRootless("keep-id only works in rootless mode")
 		userName := os.Getenv("USER")
 		if userName == "" {
 			Skip("Can't complete test if no username available")
 		}
 
 		ctrName := "ctr-name"
-		session := podmanTest.Podman([]string{"run", "--userns=keep-id", "--user", "root:root", "-d", "--stop-signal", "9", "--name", ctrName, fedoraMinimal, "sleep", "600"})
+		session := podmanTest.Podman([]string{"run", "--userns=keep-id", "--user", "root:root", "-d", "--stop-signal", "9", "--name", ctrName, CITEST_IMAGE, "sleep", "600"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
-		exec1 := podmanTest.Podman([]string{"exec", "-t", "-i", ctrName, "cat", "/etc/passwd"})
+		exec1 := podmanTest.Podman([]string{"exec", ctrName, "cat", "/etc/passwd"})
 		exec1.WaitWithDefaultTimeout()
-		Expect(exec1).Should(Exit(0))
+		Expect(exec1).Should(ExitCleanly())
 		Expect(exec1.OutputToString()).To(ContainSubstring(userName))
 
-		exec2 := podmanTest.Podman([]string{"exec", "-t", "-i", ctrName, "useradd", "testuser"})
+		exec2 := podmanTest.Podman([]string{"exec", ctrName, "adduser", "-D", "testuser"})
 		exec2.WaitWithDefaultTimeout()
-		Expect(exec2).Should(Exit(0))
+		Expect(exec2).Should(ExitCleanly())
 	})
 
 	It("podman --userns=auto", func() {
 		u, err := user.Current()
 		Expect(err).ToNot(HaveOccurred())
-		name := u.Name
+		name := u.Username
 		if name == "root" {
 			name = "containers"
 		}
@@ -216,7 +207,7 @@ var _ = Describe("Podman UserNS support", func() {
 		for i := 0; i < 5; i++ {
 			session := podmanTest.Podman([]string{"run", "--userns=auto", "alpine", "cat", "/proc/self/uid_map"})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 			l := session.OutputToString()
 			// `1024` is the default size or length of the range of user IDs
 			// that is mapped between the two user namespaces by --userns=auto.
@@ -229,7 +220,7 @@ var _ = Describe("Podman UserNS support", func() {
 		createContainersConfFileWithCustomUserns(podmanTest, "auto:size=1019")
 		session := podmanTest.Podman([]string{"run", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("1019"))
 	})
 
@@ -237,7 +228,7 @@ var _ = Describe("Podman UserNS support", func() {
 		u, err := user.Current()
 		Expect(err).ToNot(HaveOccurred())
 
-		name := u.Name
+		name := u.Username
 		if name == "root" {
 			name = "containers"
 		}
@@ -252,22 +243,22 @@ var _ = Describe("Podman UserNS support", func() {
 
 		session := podmanTest.Podman([]string{"run", "--userns=auto:size=500", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("500"))
 
 		session = podmanTest.Podman([]string{"run", "--userns=auto:size=3000", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("3000"))
 
 		session = podmanTest.Podman([]string{"run", "--userns=auto", "--user=2000:3000", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("3001"))
 
 		session = podmanTest.Podman([]string{"run", "--userns=auto", "--user=4000:1000", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("4001"))
 	})
 
@@ -275,7 +266,7 @@ var _ = Describe("Podman UserNS support", func() {
 		u, err := user.Current()
 		Expect(err).ToNot(HaveOccurred())
 
-		name := u.Name
+		name := u.Username
 		if name == "root" {
 			name = "containers"
 		}
@@ -290,13 +281,13 @@ var _ = Describe("Podman UserNS support", func() {
 
 		session := podmanTest.Podman([]string{"run", "--userns=auto:uidmapping=0:0:1", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		output := session.OutputToString()
 		Expect(output).To(MatchRegexp("\\s0\\s0\\s1"))
 
 		session = podmanTest.Podman([]string{"run", "--userns=auto:size=8192,uidmapping=0:0:1", "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("8191"))
 	})
 
@@ -304,7 +295,7 @@ var _ = Describe("Podman UserNS support", func() {
 		u, err := user.Current()
 		Expect(err).ToNot(HaveOccurred())
 
-		name := u.Name
+		name := u.Username
 		if name == "root" {
 			name = "containers"
 		}
@@ -319,32 +310,32 @@ var _ = Describe("Podman UserNS support", func() {
 
 		session := podmanTest.Podman([]string{"run", "--userns=auto:gidmapping=0:0:1", "alpine", "cat", "/proc/self/gid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		output := session.OutputToString()
 		Expect(output).To(MatchRegexp("\\s0\\s0\\s1"))
 
 		session = podmanTest.Podman([]string{"run", "--userns=auto:size=8192,gidmapping=0:0:1", "alpine", "cat", "/proc/self/gid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 		Expect(session.OutputToString()).To(ContainSubstring("8191"))
 	})
 
 	It("podman --userns=container:CTR", func() {
 		ctrName := "userns-ctr"
-		session := podmanTest.Podman([]string{"run", "-d", "--uidmap=0:0:1", "--uidmap=1:1:4998", "--name", ctrName, "alpine", "top"})
+		session := podmanTest.Podman([]string{"run", "-d", "--uidmap=0:0:1", "--uidmap=1:2:4998", "--name", ctrName, "alpine", "top"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		// runc has an issue and we also need to join the IPC namespace.
 		session = podmanTest.Podman([]string{"run", "--rm", "--userns=container:" + ctrName, "--ipc=container:" + ctrName, "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		Expect(session.OutputToString()).To(ContainSubstring("4998"))
 
 		session = podmanTest.Podman([]string{"run", "--rm", "--userns=container:" + ctrName, "--net=container:" + ctrName, "alpine", "cat", "/proc/self/uid_map"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Exit(0))
+		Expect(session).Should(ExitCleanly())
 
 		Expect(session.OutputToString()).To(ContainSubstring("4998"))
 	})
@@ -361,17 +352,17 @@ var _ = Describe("Podman UserNS support", func() {
 		for _, tt := range tests {
 			session := podmanTest.Podman([]string{"run", "-d", "--user", tt.arg, "--mount", "type=volume,src=" + tt.vol + ",dst=/home/user", "alpine", "top"})
 			session.WaitWithDefaultTimeout()
-			Expect(session).Should(Exit(0))
+			Expect(session).Should(ExitCleanly())
 
 			inspectUID := podmanTest.Podman([]string{"volume", "inspect", "--format", "{{ .UID }}", tt.vol})
 			inspectUID.WaitWithDefaultTimeout()
-			Expect(inspectUID).Should(Exit(0))
+			Expect(inspectUID).Should(ExitCleanly())
 			Expect(inspectUID.OutputToString()).To(Equal(tt.uid))
 
 			// Make sure we're defaulting to 0.
 			inspectGID := podmanTest.Podman([]string{"volume", "inspect", "--format", "{{ .GID }}", tt.vol})
 			inspectGID.WaitWithDefaultTimeout()
-			Expect(inspectGID).Should(Exit(0))
+			Expect(inspectGID).Should(ExitCleanly())
 			Expect(inspectGID.OutputToString()).To(Equal(tt.gid))
 		}
 
@@ -393,16 +384,14 @@ var _ = Describe("Podman UserNS support", func() {
 		// In any case, make sure the command doesn't succeed.
 		session = podmanTest.Podman([]string{"run", "--userns=private", "--subuidname=containers", "alpine", "true"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Not(Exit(0)))
+		Expect(session).Should(Not(ExitCleanly()))
 
 		session = podmanTest.Podman([]string{"run", "--userns=private", "--subgidname=containers", "alpine", "true"})
 		session.WaitWithDefaultTimeout()
-		Expect(session).Should(Not(Exit(0)))
+		Expect(session).Should(Not(ExitCleanly()))
 	})
 
 	It("podman PODMAN_USERNS", func() {
-		SkipIfNotRootless("keep-id only works in rootless mode")
-
 		podmanUserns, podmanUserusSet := os.LookupEnv("PODMAN_USERNS")
 		os.Setenv("PODMAN_USERNS", "keep-id")
 		defer func() {
@@ -418,11 +407,16 @@ var _ = Describe("Podman UserNS support", func() {
 
 		result := podmanTest.Podman([]string{"create", ALPINE, "true"})
 		result.WaitWithDefaultTimeout()
-		Expect(result).Should(Exit(0))
+		Expect(result).Should(ExitCleanly())
 
 		inspect := podmanTest.Podman([]string{"inspect", "--format", "{{ .HostConfig.IDMappings }}", result.OutputToString()})
 		inspect.WaitWithDefaultTimeout()
 		Expect(inspect.OutputToString()).To(Not(Equal("<nil>")))
+
+		// --pod should work.
+		result = podmanTest.Podman([]string{"create", "--pod=new:new-pod", ALPINE, "true"})
+		result.WaitWithDefaultTimeout()
+		Expect(result).Should(ExitCleanly())
 
 		if IsRemote() {
 			podmanTest.RestartRemoteService()

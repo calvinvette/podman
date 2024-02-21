@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libpod
 
 import (
@@ -10,24 +12,23 @@ import (
 	"github.com/containers/common/libimage"
 	is "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/libpod/define"
-	"github.com/containers/podman/v4/libpod/events"
-	libpodutil "github.com/containers/podman/v4/pkg/util"
+	"github.com/containers/podman/v5/libpod/define"
+	"github.com/containers/podman/v5/libpod/events"
 	"github.com/sirupsen/logrus"
 )
 
 // ContainerCommitOptions is a struct used to commit a container to an image
 // It uses buildah's CommitOptions as a base. Long-term we might wish to
-// add these to the buildah struct once buildah is more integrated with
-// libpod
+// decouple these because it includes duplicates of fields that are in, or
+// could later be added, to buildah's CommitOptions, which gets confusing
 type ContainerCommitOptions struct {
 	buildah.CommitOptions
 	Pause          bool
 	IncludeVolumes bool
 	Author         string
 	Message        string
-	Changes        []string
-	Squash         bool
+	Changes        []string // gets merged with CommitOptions.OverrideChanges
+	Squash         bool     // always used instead of CommitOptions.Squash
 }
 
 // Commit commits the changes between a container and its image, creating a new
@@ -67,8 +68,11 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 		Squash:                options.Squash,
 		SystemContext:         c.runtime.imageContext,
 		PreferredManifestType: options.PreferredManifestType,
+		OverrideChanges:       append(append([]string{}, options.Changes...), options.CommitOptions.OverrideChanges...),
+		OverrideConfig:        options.CommitOptions.OverrideConfig,
 	}
 	importBuilder, err := buildah.ImportBuilder(ctx, c.runtime.store, builderOptions)
+	importBuilder.Format = options.PreferredManifestType
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +97,8 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 	// Should we store the ENV we actually want in the spec separately?
 	if c.config.Spec.Process != nil {
 		for _, e := range c.config.Spec.Process.Env {
-			splitEnv := strings.SplitN(e, "=", 2)
-			importBuilder.SetEnv(splitEnv[0], splitEnv[1])
+			key, val, _ := strings.Cut(e, "=")
+			importBuilder.SetEnv(key, val)
 		}
 	}
 	// Expose ports
@@ -146,51 +150,6 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 	}
 	// Workdir
 	importBuilder.SetWorkDir(c.config.Spec.Process.Cwd)
-
-	// Process user changes
-	newImageConfig, err := libpodutil.GetImageConfig(options.Changes)
-	if err != nil {
-		return nil, err
-	}
-	if newImageConfig.User != "" {
-		importBuilder.SetUser(newImageConfig.User)
-	}
-	// EXPOSE only appends
-	for port := range newImageConfig.ExposedPorts {
-		importBuilder.SetPort(port)
-	}
-	// ENV only appends
-	for _, env := range newImageConfig.Env {
-		splitEnv := strings.SplitN(env, "=", 2)
-		key := splitEnv[0]
-		value := ""
-		if len(splitEnv) == 2 {
-			value = splitEnv[1]
-		}
-		importBuilder.SetEnv(key, value)
-	}
-	if newImageConfig.Entrypoint != nil {
-		importBuilder.SetEntrypoint(newImageConfig.Entrypoint)
-	}
-	if newImageConfig.Cmd != nil {
-		importBuilder.SetCmd(newImageConfig.Cmd)
-	}
-	// VOLUME only appends
-	for vol := range newImageConfig.Volumes {
-		importBuilder.AddVolume(vol)
-	}
-	if newImageConfig.WorkingDir != "" {
-		importBuilder.SetWorkDir(newImageConfig.WorkingDir)
-	}
-	for k, v := range newImageConfig.Labels {
-		importBuilder.SetLabel(k, v)
-	}
-	if newImageConfig.StopSignal != "" {
-		importBuilder.SetStopSignal(newImageConfig.StopSignal)
-	}
-	for _, onbuild := range newImageConfig.OnBuild {
-		importBuilder.SetOnBuild(onbuild)
-	}
 
 	var commitRef types.ImageReference
 	if destImage != "" {

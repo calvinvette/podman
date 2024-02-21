@@ -1,5 +1,4 @@
-//go:build linux || freebsd
-// +build linux freebsd
+//go:build (linux || freebsd) && cni
 
 package cni
 
@@ -9,18 +8,23 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/containernetworking/cni/libcni"
+	"github.com/containers/common/libnetwork/internal/rootlessnetns"
 	"github.com/containers/common/libnetwork/types"
 	"github.com/containers/common/pkg/config"
+	"github.com/containers/common/pkg/version"
 	"github.com/containers/storage/pkg/lockfile"
+	"github.com/containers/storage/pkg/unshare"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
+
+const defaultRootLockPath = "/run/lock/podman-cni.lock"
 
 type cniNetwork struct {
 	// cniConfigDir is directory where the cni config files are stored.
@@ -42,13 +46,16 @@ type cniNetwork struct {
 	isMachine bool
 
 	// lock is a internal lock for critical operations
-	lock lockfile.Locker
+	lock *lockfile.LockFile
 
 	// modTime is the timestamp when the config dir was modified
 	modTime time.Time
 
 	// networks is a map with loaded networks, the key is the network name
 	networks map[string]*network
+
+	// rootlessNetns is used for the rootless network setup/teardown
+	rootlessNetns *rootlessnetns.Netns
 }
 
 type network struct {
@@ -61,47 +68,36 @@ type network struct {
 type InitConfig struct {
 	// CNIConfigDir is directory where the cni config files are stored.
 	CNIConfigDir string
-	// CNIPluginDirs is a list of directories where cni should look for the plugins.
-	CNIPluginDirs []string
 	// RunDir is a directory where temporary files can be stored.
 	RunDir string
 
-	// DefaultNetwork is the name for the default network.
-	DefaultNetwork string
-	// DefaultSubnet is the default subnet for the default network.
-	DefaultSubnet string
-
-	// DefaultsubnetPools contains the subnets which must be used to allocate a free subnet by network create
-	DefaultsubnetPools []config.SubnetPool
-
 	// IsMachine describes whenever podman runs in a podman machine environment.
 	IsMachine bool
+
+	// Config containers.conf options
+	Config *config.Config
 }
 
 // NewCNINetworkInterface creates the ContainerNetwork interface for the CNI backend.
 // Note: The networks are not loaded from disk until a method is called.
 func NewCNINetworkInterface(conf *InitConfig) (types.ContainerNetwork, error) {
-	// TODO: consider using a shared memory lock
-	lock, err := lockfile.GetLockFile(filepath.Join(conf.CNIConfigDir, "cni.lock"))
-	if err != nil {
-		// If we're on a read-only filesystem, there is no risk of
-		// contention. Fall back to a local lockfile.
-		if errors.Is(err, unix.EROFS) {
-			lock, err = lockfile.GetLockFile(filepath.Join(conf.RunDir, "cni.lock"))
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
+	// root needs to use a globally unique lock because there is only one host netns
+	lockPath := defaultRootLockPath
+	if unshare.IsRootless() {
+		lockPath = filepath.Join(conf.CNIConfigDir, "cni.lock")
 	}
 
-	defaultNetworkName := conf.DefaultNetwork
+	lock, err := lockfile.GetLockFile(lockPath)
+	if err != nil {
+		return nil, err
+	}
+
+	defaultNetworkName := conf.Config.Network.DefaultNetwork
 	if defaultNetworkName == "" {
 		defaultNetworkName = types.DefaultNetworkName
 	}
 
-	defaultSubnet := conf.DefaultSubnet
+	defaultSubnet := conf.Config.Network.DefaultSubnet
 	if defaultSubnet == "" {
 		defaultSubnet = types.DefaultSubnet
 	}
@@ -110,21 +106,30 @@ func NewCNINetworkInterface(conf *InitConfig) (types.ContainerNetwork, error) {
 		return nil, fmt.Errorf("failed to parse default subnet: %w", err)
 	}
 
-	defaultSubnetPools := conf.DefaultsubnetPools
+	defaultSubnetPools := conf.Config.Network.DefaultSubnetPools
 	if defaultSubnetPools == nil {
 		defaultSubnetPools = config.DefaultSubnetPools
 	}
 
-	cni := libcni.NewCNIConfig(conf.CNIPluginDirs, &cniExec{})
+	var netns *rootlessnetns.Netns
+	if unshare.IsRootless() {
+		netns, err = rootlessnetns.New(conf.RunDir, rootlessnetns.CNI, conf.Config)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	cni := libcni.NewCNIConfig(conf.Config.Network.CNIPluginDirs.Values, &cniExec{})
 	n := &cniNetwork{
 		cniConfigDir:       conf.CNIConfigDir,
-		cniPluginDirs:      conf.CNIPluginDirs,
+		cniPluginDirs:      conf.Config.Network.CNIPluginDirs.Get(),
 		cniConf:            cni,
 		defaultNetwork:     defaultNetworkName,
 		defaultSubnet:      defaultNet,
 		defaultsubnetPools: defaultSubnetPools,
 		isMachine:          conf.IsMachine,
 		lock:               lock,
+		rootlessNetns:      netns,
 	}
 
 	return n, nil
@@ -143,11 +148,15 @@ func (n *cniNetwork) DefaultNetworkName() string {
 
 func (n *cniNetwork) loadNetworks() error {
 	// check the mod time of the config dir
+	var modTime time.Time
 	f, err := os.Stat(n.cniConfigDir)
-	if err != nil {
+	// ignore error if the file does not exists
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	modTime := f.ModTime()
+	if err == nil {
+		modTime = f.ModTime()
+	}
 
 	// skip loading networks if they are already loaded and
 	// if the config dir was not modified since the last call
@@ -198,7 +207,10 @@ func (n *cniNetwork) loadNetworks() error {
 
 		net, err := createNetworkFromCNIConfigList(conf, file)
 		if err != nil {
-			logrus.Errorf("CNI config list %s could not be converted to a libpod config, skipping: %v", file, err)
+			// ignore ENOENT as the config has been removed in the meantime so we can just ignore this case
+			if !errors.Is(err, fs.ErrNotExist) {
+				logrus.Errorf("CNI config list %s could not be converted to a libpod config, skipping: %v", file, err)
+			}
 			continue
 		}
 		logrus.Debugf("Successfully loaded network %s: %v", net.Name, net)
@@ -291,6 +303,43 @@ func (n *cniNetwork) Len() int {
 // DefaultInterfaceName return the default cni bridge name, must be suffixed with a number.
 func (n *cniNetwork) DefaultInterfaceName() string {
 	return cniDeviceName
+}
+
+// NetworkInfo return the network information about binary path,
+// package version and program version.
+func (n *cniNetwork) NetworkInfo() types.NetworkInfo {
+	path := ""
+	packageVersion := ""
+	for _, p := range n.cniPluginDirs {
+		ver := version.Package(p)
+		if ver != version.UnknownPackage {
+			path = p
+			packageVersion = ver
+			break
+		}
+	}
+
+	info := types.NetworkInfo{
+		Backend: types.CNI,
+		Package: packageVersion,
+		Path:    path,
+	}
+
+	dnsPath := filepath.Join(path, "dnsname")
+	dnsPackage := version.Package(dnsPath)
+	dnsProgram, err := version.ProgramDnsname(dnsPath)
+	if err != nil {
+		logrus.Infof("Failed to get the dnsname plugin version: %v", err)
+	}
+	if _, err := os.Stat(dnsPath); err == nil {
+		info.DNS = types.DNSNetworkInfo{
+			Path:    dnsPath,
+			Package: dnsPackage,
+			Version: dnsProgram,
+		}
+	}
+
+	return info
 }
 
 func (n *cniNetwork) Network(nameOrID string) (*types.Network, error) {

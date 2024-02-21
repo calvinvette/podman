@@ -1,6 +1,7 @@
 podman-attach.1.md
 podman-auto-update.1.md
 podman-build.1.md
+podman-compose.1.md
 podman-container-clone.1.md
 podman-container-diff.1.md
 podman-container-inspect.1.md
@@ -8,6 +9,7 @@ podman-container-runlabel.1.md
 podman-create.1.md
 podman-diff.1.md
 podman-exec.1.md
+podman-farm-build.1.md
 podman-image-sign.1.md
 podman-image-trust.1.md
 podman-images.1.md
@@ -19,7 +21,9 @@ podman-kube-play.1.md
 podman-login.1.md
 podman-logout.1.md
 podman-logs.1.md
+podman-machine-init.1.md
 podman-machine-list.1.md
+podman-machine-set.1.md
 podman-manifest-add.1.md
 podman-manifest-annotate.1.md
 podman-manifest-create.1.md

@@ -1,17 +1,15 @@
 package e2e_test
 
 import (
-	"strings"
-
-	"github.com/containers/podman/v4/pkg/machine"
+	"github.com/containers/podman/v5/pkg/machine"
 	jsoniter "github.com/json-iterator/go"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gexec"
 )
 
-var _ = Describe("podman machine stop", func() {
+var _ = Describe("podman inspect stop", func() {
 	var (
 		mb      *machineTestBuilder
 		testDir string
@@ -67,7 +65,14 @@ var _ = Describe("podman machine stop", func() {
 		var inspectInfo []machine.InspectInfo
 		err = jsoniter.Unmarshal(inspectSession.Bytes(), &inspectInfo)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(strings.HasSuffix(inspectInfo[0].ConnectionInfo.PodmanSocket.GetPath(), "podman.sock"))
+
+		// TODO Re-enable this for tests once inspect is fixed
+		// switch testProvider.VMType() {
+		// case define.WSLVirt:
+		// 	Expect(inspectInfo[0].ConnectionInfo.PodmanPipe.GetPath()).To(ContainSubstring("podman-"))
+		// default:
+		// 	Expect(inspectInfo[0].ConnectionInfo.PodmanSocket.GetPath()).To(HaveSuffix("podman.sock"))
+		// }
 
 		inspect := new(inspectMachine)
 		inspect = inspect.withFormat("{{.Name}}")

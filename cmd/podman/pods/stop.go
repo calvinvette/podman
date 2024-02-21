@@ -5,12 +5,12 @@ import (
 	"fmt"
 
 	"github.com/containers/common/pkg/completion"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/cmd/podman/utils"
-	"github.com/containers/podman/v4/cmd/podman/validate"
-	"github.com/containers/podman/v4/pkg/domain/entities"
-	"github.com/containers/podman/v4/pkg/specgenutil"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/cmd/podman/utils"
+	"github.com/containers/podman/v5/cmd/podman/validate"
+	"github.com/containers/podman/v5/pkg/domain/entities"
+	"github.com/containers/podman/v5/pkg/specgenutil"
 	"github.com/spf13/cobra"
 )
 
@@ -18,8 +18,8 @@ import (
 type podStopOptionsWrapper struct {
 	entities.PodStopOptions
 
-	PodIDFiles []string
-	TimeoutCLI uint
+	podIDFiles []string
+	timeoutCLI int
 }
 
 var (
@@ -40,7 +40,6 @@ var (
 		},
 		ValidArgsFunction: common.AutocompletePodsRunning,
 		Example: `podman pod stop mywebserverpod
-  podman pod stop --latest
   podman pod stop --time 0 490eb 3557fb`,
 	}
 )
@@ -55,11 +54,11 @@ func init() {
 	flags.BoolVarP(&stopOptions.Ignore, "ignore", "i", false, "Ignore errors when a specified pod is missing")
 
 	timeFlagName := "time"
-	flags.UintVarP(&stopOptions.TimeoutCLI, timeFlagName, "t", containerConfig.Engine.StopTimeout, "Seconds to wait for pod stop before killing the container")
+	flags.IntVarP(&stopOptions.timeoutCLI, timeFlagName, "t", int(containerConfig.Engine.StopTimeout), "Seconds to wait for pod stop before killing the container")
 	_ = stopCommand.RegisterFlagCompletionFunc(timeFlagName, completion.AutocompleteNone)
 
 	podIDFileFlagName := "pod-id-file"
-	flags.StringArrayVarP(&stopOptions.PodIDFiles, podIDFileFlagName, "", nil, "Write the pod ID to the file")
+	flags.StringArrayVarP(&stopOptions.podIDFiles, podIDFileFlagName, "", nil, "Write the pod ID to the file")
 	_ = stopCommand.RegisterFlagCompletionFunc(podIDFileFlagName, completion.AutocompleteDefault)
 
 	validate.AddLatestFlag(stopCommand, &stopOptions.Latest)
@@ -76,10 +75,10 @@ func stop(cmd *cobra.Command, args []string) error {
 		errs utils.OutputErrors
 	)
 	if cmd.Flag("time").Changed {
-		stopOptions.Timeout = int(stopOptions.TimeoutCLI)
+		stopOptions.Timeout = stopOptions.timeoutCLI
 	}
 
-	ids, err := specgenutil.ReadPodIDFiles(stopOptions.PodIDFiles)
+	ids, err := specgenutil.ReadPodIDFiles(stopOptions.podIDFiles)
 	if err != nil {
 		return err
 	}

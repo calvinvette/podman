@@ -2,14 +2,14 @@ package containers
 
 import (
 	"context"
-	"os"
+	"strings"
 
 	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/completion"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/podman/v4/cmd/podman/common"
-	"github.com/containers/podman/v4/cmd/podman/registry"
-	"github.com/containers/podman/v4/pkg/domain/entities"
+	"github.com/containers/podman/v5/cmd/podman/common"
+	"github.com/containers/podman/v5/cmd/podman/registry"
+	"github.com/containers/podman/v5/pkg/domain/entities"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -90,10 +90,10 @@ func runlabel(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("tls-verify") {
 		runlabelOptions.SkipTLSVerify = types.NewOptionalBool(!runlabelOptions.TLSVerifyCLI)
 	}
-	if runlabelOptions.Authfile != "" {
-		if _, err := os.Stat(runlabelOptions.Authfile); err != nil {
+	if cmd.Flags().Changed("authfile") {
+		if err := auth.CheckAuthFile(runlabelOptions.Authfile); err != nil {
 			return err
 		}
 	}
-	return registry.ContainerEngine().ContainerRunlabel(context.Background(), args[0], args[1], args[2:], runlabelOptions.ContainerRunlabelOptions)
+	return registry.ContainerEngine().ContainerRunlabel(context.Background(), strings.TrimPrefix(args[0], "/"), args[1], args[2:], runlabelOptions.ContainerRunlabelOptions)
 }

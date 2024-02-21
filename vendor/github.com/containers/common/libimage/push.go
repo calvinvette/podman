@@ -1,3 +1,5 @@
+//go:build !remote
+
 package libimage
 
 import (
@@ -10,7 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// PushOptions allows for custommizing image pushes.
+// PushOptions allows for customizing image pushes.
 type PushOptions struct {
 	CopyOptions
 }

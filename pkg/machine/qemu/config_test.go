@@ -1,135 +1,80 @@
-//go:build (amd64 && !windows) || (arm64 && !windows)
-// +build amd64,!windows arm64,!windows
+//go:build !darwin
 
 package qemu
 
 import (
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 
-	"github.com/containers/podman/v4/pkg/machine"
-	"github.com/containers/podman/v4/test/utils"
+	"github.com/containers/podman/v5/pkg/machine/define"
 )
 
-func TestMachineFile_GetPath(t *testing.T) {
-	path := "/var/tmp/podman/my.sock"
-	sym := "/tmp/podman/my.sock"
-	type fields struct {
-		Path    string
-		Symlink *string
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		want   string
-	}{
-		{
-			name:   "Original path",
-			fields: fields{path, nil},
-			want:   path,
-		},
-		{
-			name: "Symlink over path",
-			fields: fields{
-				Path:    path,
-				Symlink: &sym,
-			},
-			want: sym,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := &machine.VMFile{
-				Path:    tt.fields.Path,    //nolint: scopelint
-				Symlink: tt.fields.Symlink, //nolint: scopelint
-			}
-			if got := m.GetPath(); got != tt.want { //nolint: scopelint
-				t.Errorf("GetPath() = %v, want %v", got, tt.want) //nolint: scopelint
-			}
-		})
-	}
-}
-
-func TestNewMachineFile(t *testing.T) {
-	empty := ""
-
-	homedir := t.TempDir()
-	longTemp := t.TempDir()
-	oldhome := os.Getenv("HOME")
-	os.Setenv("HOME", homedir) //nolint: tenv
-	defer os.Setenv("HOME", oldhome)
-
-	p := "/var/tmp/podman/my.sock"
-	longp := filepath.Join(longTemp, utils.RandomString(100), "my.sock")
-	err := os.MkdirAll(filepath.Dir(longp), 0755)
-	if err != nil {
-		panic(err)
-	}
-	f, err := os.Create(longp)
-	if err != nil {
-		panic(err)
-	}
-	_ = f.Close()
-	sym := "my.sock"
-	longSym := filepath.Join(homedir, ".podman", sym)
-
-	m := machine.VMFile{
-		Path:    p,
-		Symlink: nil,
-	}
-	type args struct {
-		path    string
-		symlink *string
-	}
+func TestUSBParsing(t *testing.T) {
 	tests := []struct {
 		name    string
-		args    args
-		want    *machine.VMFile
+		args    []string
+		result  []define.USBConfig
 		wantErr bool
 	}{
 		{
-			name:    "Good",
-			args:    args{path: p},
-			want:    &m,
+			name: "Good vendor and product",
+			args: []string{"vendor=13d3,product=5406", "vendor=08ec,product=0016"},
+			result: []define.USBConfig{
+				{
+					Vendor:  5075,
+					Product: 21510,
+				},
+				{
+					Vendor:  2284,
+					Product: 22,
+				},
+			},
 			wantErr: false,
 		},
 		{
-			name:    "Good with short symlink",
-			args:    args{p, &sym},
-			want:    &machine.VMFile{Path: p},
+			name: "Good bus and device number",
+			args: []string{"bus=1,devnum=4", "bus=1,devnum=3"},
+			result: []define.USBConfig{
+				{
+					Bus:       "1",
+					DevNumber: "4",
+				},
+				{
+					Bus:       "1",
+					DevNumber: "3",
+				},
+			},
 			wantErr: false,
 		},
 		{
-			name:    "Bad path name",
-			args:    args{empty, nil},
-			want:    nil,
+			name:    "Bad vendor and product, not hexa",
+			args:    []string{"vendor=13dk,product=5406"},
+			result:  []define.USBConfig{},
 			wantErr: true,
 		},
 		{
-			name:    "Bad symlink name",
-			args:    args{p, &empty},
-			want:    nil,
+			name:    "Bad vendor and product, bad separator",
+			args:    []string{"vendor=13d3:product=5406"},
+			result:  []define.USBConfig{},
 			wantErr: true,
 		},
 		{
-			name:    "Good with long symlink",
-			args:    args{longp, &sym},
-			want:    &machine.VMFile{Path: longp, Symlink: &longSym},
-			wantErr: false,
+			name:    "Bad vendor and product, missing equal",
+			args:    []string{"vendor=13d3:product-5406"},
+			result:  []define.USBConfig{},
+			wantErr: true,
 		},
 	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := machine.NewMachineFile(tt.args.path, tt.args.symlink)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("NewMachineFile() error = %v, wantErr %v", err, tt.wantErr)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := define.ParseUSBs(test.args)
+			if (err != nil) != test.wantErr {
+				t.Errorf("parseUUBs error = %v, wantErr %v", err, test.wantErr)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("NewMachineFile() got = %v, want %v", got, tt.want)
+			if !reflect.DeepEqual(got, test.result) {
+				t.Errorf("parseUUBs got %v, want %v", got, test.result)
 			}
 		})
 	}

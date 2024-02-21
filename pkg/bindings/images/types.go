@@ -3,7 +3,7 @@ package images
 import (
 	"io"
 
-	buildahDefine "github.com/containers/buildah/define"
+	"github.com/containers/podman/v5/pkg/domain/entities/types"
 )
 
 // RemoveOptions are optional options for image removal
@@ -142,10 +142,18 @@ type PushOptions struct {
 	Compress *bool
 	// CompressionFormat is the format to use for the compression of the blobs
 	CompressionFormat *string
+	// CompressionLevel is the level to use for the compression of the blobs
+	CompressionLevel *int
+	// ForceCompressionFormat ensures that the compression algorithm set in
+	// CompressionFormat is used exclusively, and blobs of other compression
+	// algorithms are not reused.
+	ForceCompressionFormat *bool
+	// Add existing instances with requested compression algorithms to manifest list
+	AddCompression []string
 	// Manifest type of the pushed image
 	Format *string
 	// Password for authenticating against the registry.
-	Password *string
+	Password *string `schema:"-"`
 	// ProgressWriter is a writer where push progress are sent.
 	// Since API handler for image push is quiet by default, WithQuiet(false) is necessary for
 	// the writer to receive progress messages.
@@ -155,9 +163,12 @@ type PushOptions struct {
 	// RemoveSignatures Discard any pre-existing signatures in the image.
 	RemoveSignatures *bool
 	// Username for authenticating against the registry.
-	Username *string
+	Username *string `schema:"-"`
 	// Quiet can be specified to suppress progress when pushing.
 	Quiet *bool
+
+	// Manifest of the pushed image.  Set by images.Push.
+	ManifestDigest *string
 }
 
 // SearchOptions are optional options for searching images on registries
@@ -175,6 +186,10 @@ type SearchOptions struct {
 	SkipTLSVerify *bool `schema:"-"`
 	// ListTags search the available tags of the repository
 	ListTags *bool
+	// Username for authenticating against the registry.
+	Username *string `schema:"-"`
+	// Password for authenticating against the registry.
+	Password *string `schema:"-"`
 }
 
 // PullOptions are optional options for pulling images
@@ -196,24 +211,26 @@ type PullOptions struct {
 	// "newer", "always". An empty string defaults to "always".
 	Policy *string
 	// Password for authenticating against the registry.
-	Password *string
+	Password *string `schema:"-"`
 	// ProgressWriter is a writer where pull progress are sent.
 	ProgressWriter *io.Writer `schema:"-"`
 	// Quiet can be specified to suppress pull progress when pulling.  Ignored
 	// for remote calls.
 	Quiet *bool
+	// Retry number of times to retry pull in case of failure
+	Retry *uint
+	// RetryDelay between retries in case of pull failures
+	RetryDelay *string
 	// SkipTLSVerify to skip HTTPS and certificate verification.
 	SkipTLSVerify *bool `schema:"-"`
 	// Username for authenticating against the registry.
-	Username *string
+	Username *string `schema:"-"`
 	// Variant will overwrite the local variant for image pulls.
 	Variant *string
 }
 
 // BuildOptions are optional options for building images
-type BuildOptions struct {
-	buildahDefine.BuildOptions
-}
+type BuildOptions = types.BuildOptions
 
 // ExistsOptions are optional options for checking if an image exists
 //

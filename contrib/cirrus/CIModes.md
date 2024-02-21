@@ -19,7 +19,7 @@ outdated) example of it's output can be seen below:
   While it's arguably easier to read that `only_if`, it leads to a cluttered
   status output that's harder to page through when reviewing PRs.  As opposed
   to `only_if` which will bypass creation of the task (at runtime) completely.
-  Also, by sticking to one conditional style, it's easier to re-use the YAML
+  Also, by sticking to one conditional style, it's easier to reuse the YAML
   statements across multiple tasks.
 
 + The only variables which can be used as part of conditions are defined by
@@ -49,6 +49,7 @@ of this document, it's not possible to override the behavior of `$CIRRUS_PR`.
 + swagger
 + *alt_build*
 + osx_alt_build
++ freebsd_alt_build
 + docker-py_test
 + *unit_test*
 + apiv2_test
@@ -79,28 +80,58 @@ of this document, it's not possible to override the behavior of `$CIRRUS_PR`.
 + meta
 + success
 
-### Intended `[CI:COPR]` PR Tasks:
-+ *build*
-+ validate
-+ swagger
-+ meta
-+ success
-
-### Intend `[CI:BUILD]` PR Tasks:
+### Intended `[CI:BUILD]` PR Tasks:
 + *build*
 + validate
 + *alt_build*
 + osx_alt_build
-+ test_image_build
++ freebsd_alt_build
 + meta
 + success
 + artifacts
 
-### Intended Branch tasks (and Cirrus-cron jobs, except "multiarch"):
+### Intended `[CI:MACHINE]` PR Tasks:
+
+If and only if the PR is in **draft-mode**, run only the following
+tasks.  The draft-mode check is necessary to remove the risk of
+merging a change that affects the untested aspects of podman.
+
++ *build*
++ validate
++ *alt_build*
++ win_installer
++ osx_alt_build
++ podman_machine_task
++ podman_machine_aarch64_task
++ podman_machine_windows_task
++ podman_machine_mac_task
++ meta
++ success
++ artifacts
+
+### Intended `[CI:NEXT]` behavior:
+
+If and only if the PR is in **draft-mode**, update Fedora CI VMs at runtime
+to the latest packages available in the podman-next COPR repo.  These packages
+represent primary podman dependencies, and are regularly built from their
+upstream repos.  These are **runtime changes** only, and will not persist
+or impact other PRs in any way.
+
+The intent is to temporarily support testing of updates with the latest podman
+code & tests.  To help prevent accidents, when the PR is not in draft-mode, the
+presence of the magic string will cause VM-setup script to fail, until the magic
+is removed.
+
+**Note:** When changing the draft-status of PR, you will need to re-push a
+commit-change before Cirrus-CI will notice the draft-status update (i.e.
+pressing the re-run button **is not** good enough).
+
+### Intended Branch tasks (and Cirrus-cron jobs):
 + *build*
 + swagger
 + *alt_build*
 + osx_alt_build
++ freebsd_alt_build
 + *local_system_test*
 + *remote_system_test*
 + *rootless_remote_system_test*
@@ -109,16 +140,12 @@ of this document, it's not possible to override the behavior of `$CIRRUS_PR`.
 + success
 + artifacts
 
-### Intended for "multiarch" Cirrus-Cron (always a branch):
-+ image_build
-+ meta
-+ success
-
 ### Intended for new Tag tasks:
 + *build*
 + swagger
 + *alt_build*
 + osx_alt_build
++ freebsd_alt_build
 + meta
 + success
 + artifacts
